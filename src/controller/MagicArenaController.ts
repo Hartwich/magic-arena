@@ -1,0 +1,42 @@
+import type { MagicArenaControllerState } from "../protocol.js";
+import type { MagicArenaLayoutModel } from "./platform-layout-models.js";
+import type { ControllerGameRenderContext } from "./platform-registry.js";
+import {
+  createMagicArenaPlanSlotInput,
+  createMagicArenaReadyInput
+} from "./magicArenaBindings.js";
+
+export function buildMagicArenaControllerModel(context: ControllerGameRenderContext): MagicArenaLayoutModel {
+  const { state, onInput } = context;
+  const playerId = state.player?.id ?? "";
+  const gameState = (state.game?.state ?? {}) as MagicArenaControllerState;
+  const en = state.room?.language === "en";
+  const ownPlayer = gameState.ownPlayer;
+  const plannedCount = gameState.plannedActionsByPlayer?.[playerId]?.length ?? 0;
+  const requiredSlots = ownPlayer?.requiredSlots ?? 0;
+
+  return {
+    kind: "magic_arena",
+    title: "Magic Arena",
+    subtitle:
+      gameState.magicPhase === "planning"
+        ? `${en ? "Planning" : "Planung"} ${plannedCount}/${requiredSlots}`
+        : gameState.magicPhase === "execution"
+          ? en ? "Execution" : "Ausfuehrung"
+          : gameState.winnerPlayerId
+            ? en ? "Game over" : "Spielende"
+            : undefined,
+    helperText:
+      state.game?.message ??
+      (en
+        ? "Choose a figure, an action or card, and then target coordinates."
+        : "Waehle Figur, Aktion oder Karte und danach Zielkoordinaten."),
+    language: state.room?.language,
+    disabled: state.game?.phase !== "playing" || gameState.magicPhase !== "planning" || !ownPlayer || ownPlayer.ready,
+    resetKey: `${state.game?.roundNumber ?? 0}:${gameState.roundIndex ?? 0}:${gameState.magicPhase ?? "none"}:${plannedCount}:${ownPlayer?.ready ? "ready" : "open"}`,
+    currentPlayerId: playerId,
+    state: gameState,
+    onPlanSlot: (slotIndex, action) => onInput(createMagicArenaPlanSlotInput(playerId, slotIndex, action)),
+    onReady: () => onInput(createMagicArenaReadyInput(playerId))
+  };
+}
