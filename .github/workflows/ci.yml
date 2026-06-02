@@ -48,6 +48,7 @@ jobs:
         run: |
           mkdir -p node_modules/@open-party-lab
           for package in game-core protocol ui-kit utils; do
+            rm -rf "node_modules/@open-party-lab/$package"
             ln -sfn "$GITHUB_WORKSPACE/platform/packages/$package" "node_modules/@open-party-lab/$package"
           done
 
