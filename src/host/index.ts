@@ -2066,7 +2066,14 @@ export class MagicArenaHostScene extends Phaser.Scene {
     title.style.fontSize = "20px";
     title.style.color = "#f8fafc";
     const phase = document.createElement("span");
-    phase.textContent = `Runde ${state.roundIndex} | ${state.magicPhase}${state.currentSlot !== null ? ` | Slot ${state.currentSlot + 1}` : ""}`;
+    const activePlayerName = state.activePlayerId
+      ? state.players.find((player) => player.playerId === state.activePlayerId)?.name ?? state.activePlayerId
+      : null;
+    phase.textContent = `Runde ${state.roundIndex} | ${state.magicPhase}${state.currentSlot !== null ? ` | Slot ${state.currentSlot + 1}` : ""}${
+      state.planningMode === "sequential" && state.magicPhase === "planning" && activePlayerName
+        ? ` | ${activePlayerName} am Zug`
+        : ""
+    }`;
     phase.style.color = "#bae6fd";
     panel.append(title, phase);
 
@@ -2097,10 +2104,18 @@ export class MagicArenaHostScene extends Phaser.Scene {
       ? `Rundenereignis: ${state.currentRoundEvent.name}\n${state.currentRoundEvent.description}`
       : "";
     const isRoundEvent = state.activeAction?.kind === "round_event" || Boolean(state.currentRoundEvent);
-    const visible = Boolean(state.activeAction?.label || eventLabel);
-    const label = state.activeAction?.label ?? eventLabel;
+    const turnLabel =
+      state.planningMode === "sequential" && state.magicPhase === "planning" && state.activePlayerId
+        ? `${state.players.find((player) => player.playerId === state.activePlayerId)?.name ?? state.activePlayerId} ist am Zug (Zug ${state.planningSlotIndex + 1}/${state.totalPlanningSlots})`
+        : "";
+    const visible = Boolean(state.activeAction?.label || eventLabel || turnLabel);
+    const label = turnLabel
+      ? eventLabel
+        ? `${turnLabel}\n${eventLabel}`
+        : turnLabel
+      : state.activeAction?.label ?? eventLabel;
 
-    if (state.activeAction?.resultLabel) {
+    if (!turnLabel && state.activeAction?.resultLabel) {
       const main = document.createElement("span");
       main.textContent = label;
       main.style.display = "block";

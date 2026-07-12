@@ -15,7 +15,8 @@ import {
   DIG_NOTHING_CHANCE,
   DIG_SMALL_CHEST_CHANCE,
   DIG_TREASURE_CHANCE,
-  DIG_UNSTABLE_GROUND_CHANCE
+  DIG_UNSTABLE_GROUND_CHANCE,
+  magicArenaRoomSettingKeys
 } from "./magicArenaConfig.js";
 import { getFieldMaxHp } from "./magicArenaBoard.js";
 import {
@@ -33,6 +34,7 @@ import {
   expireWaterAndRoundEffects,
   getField,
   getInitiativeOrder,
+  handleMagicArenaInput,
   makeFigureFallIntoWater,
   maybeSpawnCrystalFieldForRound,
   resolveArenaDecayEndEffect,
@@ -43,6 +45,7 @@ import {
   resolveStormCloudsForSlot,
   resolveTimeRiftsForRound,
   startMagicArenaRound,
+  tickMagicArena,
   toMagicArenaPublicState,
   tryAutoRescueAround,
   type MagicArenaRuntimeState
@@ -831,6 +834,110 @@ export function runMagicArenaRuleTests(): void {
     }
 
     assert.equal(spawned, true);
+  }
+
+  {
+    // Sequential planning mode: players take turns one move at a time.
+    const context = createContext();
+    context.roomSettings = { [magicArenaRoomSettingKeys.planningMode]: "sequential" };
+    let state = startMagicArenaRound(context);
+    let now = context.now;
+    assert.equal(state.planningMode, "sequential");
+    assert.equal(state.magicPhase, "execution");
+    assert.equal(state.sequentialStage, "bombs");
+
+    const tick = (advanceMs = 5_000) => {
+      now += advanceMs;
+      state = tickMagicArena(state, advanceMs, { ...context, now });
+    };
+
+    // Bomb step for slot 0 resolves (no bombs), then the first player's turn starts.
+    for (let guard = 0; guard < 10 && (state.magicPhase as string) !== "planning"; guard += 1) {
+      tick();
+    }
+    assert.equal(state.magicPhase, "planning");
+    const initiativeOrder = getInitiativeOrder(state);
+    assert.equal(state.activePlayerId, initiativeOrder[0]);
+    assert.equal(state.planningSlotIndex, 0);
+
+    // A player who is not on turn cannot plan or execute.
+    const otherPlayerId = initiativeOrder[1];
+    assert.ok(otherPlayerId);
+    const otherFigure = state.players.find((player) => player.playerId === otherPlayerId)?.figures[0];
+    assert.ok(otherFigure?.coord);
+    const blocked = handleMagicArenaInput(
+      state,
+      {
+        type: "magic-arena:plan-slot",
+        playerId: otherPlayerId,
+        slotIndex: 0,
+        action: {
+          figureId: otherFigure.figureId,
+          actionKind: "base",
+          baseActionId: "dig"
+        },
+        sentAt: now
+      },
+      { ...context, now }
+    );
+    assert.equal((blocked.plannedActionsByPlayer[otherPlayerId] ?? []).length, 0);
+    state = blocked;
+
+    // Play a full round: every player digs once per slot, strictly alternating.
+    for (let slot = 0; slot < 4; slot += 1) {
+      for (let turn = 0; turn < initiativeOrder.length; turn += 1) {
+        assert.equal(state.magicPhase, "planning", `expected planning at slot ${slot} turn ${turn}`);
+        assert.equal(state.planningSlotIndex, slot);
+        const activePlayerId = state.activePlayerId;
+        assert.ok(activePlayerId, "expected an active player");
+        const activePlayer = state.players.find((player) => player.playerId === activePlayerId);
+        assert.ok(activePlayer);
+        const reserved = new Set(
+          (state.plannedActionsByPlayer[activePlayerId] ?? []).map((action) => action.figureId)
+        );
+        const figure = activePlayer.figures.find(
+          (entry) => entry.status === "alive" && entry.coord && !reserved.has(entry.figureId)
+        );
+        assert.ok(figure, "expected a plannable figure");
+
+        state = handleMagicArenaInput(
+          state,
+          {
+            type: "magic-arena:plan-slot",
+            playerId: activePlayerId,
+            slotIndex: slot,
+            action: {
+              figureId: figure.figureId,
+              actionKind: "base",
+              baseActionId: "dig"
+            },
+            sentAt: now
+          },
+          { ...context, now }
+        );
+        assert.equal(
+          (state.plannedActionsByPlayer[activePlayerId] ?? []).some((action) => action.slotIndex === slot),
+          true,
+          "expected the move to be planned"
+        );
+
+        state = handleMagicArenaInput(
+          state,
+          { type: "magic-arena:ready", playerId: activePlayerId, sentAt: now },
+          { ...context, now }
+        );
+        assert.equal(state.magicPhase, "execution");
+        assert.equal(state.executionQueue.length, 1);
+
+        // Run ticks until the next planning turn or the next round starts.
+        for (let guard = 0; guard < 24 && state.magicPhase === "execution" && state.roundIndex === 1; guard += 1) {
+          tick();
+        }
+      }
+    }
+
+    assert.equal(state.roundIndex, 2, "expected round 2 after all sequential moves");
+    assert.equal(state.magicPhase === "planning" || state.magicPhase === "execution", true);
   }
 }
 

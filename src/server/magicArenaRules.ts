@@ -22,6 +22,7 @@ import type {
   MagicArenaInput,
   MagicArenaPendingBombState,
   MagicArenaPlannedAction,
+  MagicArenaPlanningMode,
   MagicArenaPlayerState,
   MagicArenaPublicState,
   MagicArenaRoundEventId,
@@ -50,9 +51,12 @@ import {
   EXECUTION_STEP_MS,
   FIGURE_MAX_HP,
   FIGURES_PER_PLAYER,
+  MAGIC_ARENA_DEFAULT_PLANNING_MODE,
   MAGIC_ARENA_GAME_ID,
+  MAGIC_ARENA_PLANNING_MODES,
   MAX_ACTION_LOG_ENTRIES,
   MAX_HAND_CARDS,
+  magicArenaRoomSettingKeys,
   MAX_OCCUPANTS_PER_FIELD,
   PLANNED_ACTIONS_PER_ROUND,
   PUSH_CHAIN_LIMIT,
@@ -100,9 +104,16 @@ interface MagicArenaExecutionStep {
   action?: MagicArenaPlannedAction;
 }
 
+export type MagicArenaSequentialStage = "bombs" | "turns" | "storm_clouds" | "round_end";
+
 export interface MagicArenaRuntimeState extends BaseRoundState {
   gameId: "magic-arena";
   magicPhase: "setup" | "planning" | "execution" | "game_over";
+  planningMode: MagicArenaPlanningMode;
+  planningSlotIndex: number;
+  turnOrderIndex: number;
+  sequentialStage: MagicArenaSequentialStage;
+  activePlayerId: string | null;
   roundIndex: number;
   currentSlot: number | null;
   initiativeStartIndex: number;
@@ -367,11 +378,33 @@ function isFreeIntactField(state: MagicArenaRuntimeState, coord: MagicArenaCoord
   return Boolean(field?.exists && field.occupants.length < MAX_OCCUPANTS_PER_FIELD);
 }
 
+export function playerHasPlannableFigure(state: MagicArenaRuntimeState, playerId: string): boolean {
+  const player = getPlayer(state, playerId);
+
+  if (!player) {
+    return false;
+  }
+
+  const reservedFigureIds = new Set(
+    (state.plannedActionsByPlayer[playerId] ?? [])
+      .filter((action) => action.slotIndex !== state.planningSlotIndex)
+      .map((action) => action.figureId)
+  );
+
+  return player.figures.some(
+    (figure) => isActionCapableFigure(state, figure) && !reservedFigureIds.has(figure.figureId)
+  );
+}
+
 export function getRequiredPlanningSlots(state: MagicArenaRuntimeState, playerId: string): number {
   const player = getPlayer(state, playerId);
 
   if (!player) {
     return 0;
+  }
+
+  if (state.planningMode === "sequential") {
+    return state.activePlayerId === playerId && playerHasPlannableFigure(state, playerId) ? 1 : 0;
   }
 
   return Math.min(
@@ -415,10 +448,11 @@ function randomizePlayerHand(state: MagicArenaRuntimeState, player: MagicArenaRu
   );
 }
 
-function beginPlanningRound(state: MagicArenaRuntimeState, now: number): MagicArenaRuntimeState {
-  state.magicPhase = "planning";
-  state.currentSlot = null;
-  state.activeAction = state.currentRoundEvent
+function buildRoundEventActiveAction(
+  state: MagicArenaRuntimeState,
+  now: number
+): MagicArenaActiveActionState | undefined {
+  return state.currentRoundEvent
     ? {
         kind: "round_event",
         roundIndex: state.roundIndex,
@@ -429,6 +463,16 @@ function beginPlanningRound(state: MagicArenaRuntimeState, now: number): MagicAr
         at: now
       }
     : undefined;
+}
+
+function beginPlanningRound(state: MagicArenaRuntimeState, now: number): MagicArenaRuntimeState {
+  state.magicPhase = "planning";
+  state.currentSlot = null;
+  state.planningSlotIndex = 0;
+  state.turnOrderIndex = 0;
+  state.sequentialStage = "bombs";
+  state.activePlayerId = null;
+  state.activeAction = buildRoundEventActiveAction(state, now);
   state.nextExecutionAt = null;
   state.executionQueue = [];
   state.plannedActionsByPlayer = {};
@@ -444,6 +488,140 @@ function beginPlanningRound(state: MagicArenaRuntimeState, now: number): MagicAr
   appendLog(state, `Runde ${state.roundIndex}: Planungsphase beginnt.`, null);
   state.updatedAt = now;
   return state;
+}
+
+function beginSequentialRound(state: MagicArenaRuntimeState, now: number): MagicArenaRuntimeState {
+  state.magicPhase = "execution";
+  state.currentSlot = null;
+  state.planningSlotIndex = 0;
+  state.turnOrderIndex = 0;
+  state.sequentialStage = "bombs";
+  state.activePlayerId = null;
+  state.activeAction = buildRoundEventActiveAction(state, now);
+  state.plannedActionsByPlayer = {};
+  state.players = state.players.map((player) => ({
+    ...player,
+    ready: false
+  }));
+
+  for (const player of state.players) {
+    randomizePlayerHand(state, player);
+  }
+
+  state.executionQueue = [
+    {
+      kind: "bombs",
+      roundIndex: state.roundIndex,
+      slotIndex: 0
+    }
+  ];
+  state.nextExecutionAt = now;
+  appendLog(state, `Runde ${state.roundIndex}: Zug-fuer-Zug-Phase beginnt.`, null);
+  state.updatedAt = now;
+  return state;
+}
+
+function beginRound(state: MagicArenaRuntimeState, now: number): MagicArenaRuntimeState {
+  return state.planningMode === "sequential"
+    ? beginSequentialRound(state, now)
+    : beginPlanningRound(state, now);
+}
+
+function startNextSequentialTurn(state: MagicArenaRuntimeState, now: number): MagicArenaRuntimeState {
+  const initiativeOrder = getInitiativeOrder(state);
+
+  while (state.turnOrderIndex < initiativeOrder.length) {
+    const playerId = initiativeOrder[state.turnOrderIndex];
+
+    if (playerId && playerHasPlannableFigure(state, playerId)) {
+      state.magicPhase = "planning";
+      state.activePlayerId = playerId;
+      state.currentSlot = state.planningSlotIndex;
+      state.nextExecutionAt = null;
+      state.executionQueue = [];
+      state.players = state.players.map((player) => ({
+        ...player,
+        ready: false
+      }));
+      appendLog(
+        state,
+        `${getPlayerName(state, playerId)} ist am Zug (Zug ${state.planningSlotIndex + 1}/${PLANNED_ACTIONS_PER_ROUND}).`,
+        state.planningSlotIndex
+      );
+      state.updatedAt = now;
+      return state;
+    }
+
+    state.turnOrderIndex += 1;
+  }
+
+  state.activePlayerId = null;
+  state.sequentialStage = "storm_clouds";
+  state.magicPhase = "execution";
+  state.executionQueue = [
+    {
+      kind: "storm_clouds",
+      roundIndex: state.roundIndex,
+      slotIndex: state.planningSlotIndex
+    }
+  ];
+  state.nextExecutionAt = now;
+  state.updatedAt = now;
+  return state;
+}
+
+function advanceSequentialFlow(state: MagicArenaRuntimeState, now: number): MagicArenaRuntimeState {
+  if (state.sequentialStage === "bombs") {
+    state.sequentialStage = "turns";
+    state.turnOrderIndex = 0;
+    return startNextSequentialTurn(state, now);
+  }
+
+  if (state.sequentialStage === "turns") {
+    state.turnOrderIndex += 1;
+    return startNextSequentialTurn(state, now);
+  }
+
+  if (state.sequentialStage === "storm_clouds") {
+    if (state.planningSlotIndex < PLANNED_ACTIONS_PER_ROUND - 1) {
+      state.planningSlotIndex += 1;
+      state.sequentialStage = "bombs";
+      state.magicPhase = "execution";
+      state.executionQueue = [
+        {
+          kind: "bombs",
+          roundIndex: state.roundIndex,
+          slotIndex: state.planningSlotIndex
+        }
+      ];
+      state.nextExecutionAt = now;
+      state.updatedAt = now;
+      return state;
+    }
+
+    state.sequentialStage = "round_end";
+    state.magicPhase = "execution";
+    state.executionQueue = [];
+
+    if (hasRoundEventEndEffect(state.currentRoundEvent)) {
+      state.executionQueue.push({
+        kind: "round_event_end",
+        roundIndex: state.roundIndex,
+        slotIndex: PLANNED_ACTIONS_PER_ROUND - 1
+      });
+    }
+
+    state.executionQueue.push({
+      kind: "arena_decay",
+      roundIndex: state.roundIndex,
+      slotIndex: PLANNED_ACTIONS_PER_ROUND - 1
+    });
+    state.nextExecutionAt = now;
+    state.updatedAt = now;
+    return state;
+  }
+
+  return finishExecutionRound(state, now);
 }
 
 function createPlayers(
@@ -493,19 +671,39 @@ function createPlayers(
   });
 }
 
+export function resolveMagicArenaPlanningMode(
+  roomSettings: Readonly<Record<string, unknown>> | undefined
+): MagicArenaPlanningMode {
+  const configured = roomSettings?.[magicArenaRoomSettingKeys.planningMode];
+
+  return typeof configured === "string" &&
+    (MAGIC_ARENA_PLANNING_MODES as readonly string[]).includes(configured)
+    ? (configured as MagicArenaPlanningMode)
+    : MAGIC_ARENA_DEFAULT_PLANNING_MODE;
+}
+
 export function createMagicArenaInitialState(context: ServerGameContext): MagicArenaRuntimeState {
   const rngSeed = createSeed(context);
   const board = createMagicArenaBoard(rngSeed);
   const players = createPlayers(context, board);
   assignMagicArenaSpecialFields(board, rngSeed);
   const deck = seededShuffle(createMagicArenaDeck(), `${rngSeed}:deck`);
+  const planningMode = resolveMagicArenaPlanningMode(context.roomSettings);
   const state: MagicArenaRuntimeState = {
     ...createBaseRoundState("round_intro", context.now, {
       durationMs: roundPhaseDurations.roundIntroMs,
-      message: "Magic Arena: Plane vier Aktionen und ueberlebe die Hex-Insel."
+      message:
+        planningMode === "sequential"
+          ? "Magic Arena: Zieht Zug fuer Zug nacheinander und ueberlebt die Hex-Insel."
+          : "Magic Arena: Plane vier Aktionen und ueberlebe die Hex-Insel."
     }),
     gameId: MAGIC_ARENA_GAME_ID,
     magicPhase: "setup",
+    planningMode,
+    planningSlotIndex: 0,
+    turnOrderIndex: 0,
+    sequentialStage: "bombs",
+    activePlayerId: null,
     roundIndex: 1,
     currentSlot: null,
     initiativeStartIndex: 0,
@@ -542,16 +740,23 @@ export function createMagicArenaInitialState(context: ServerGameContext): MagicA
 
 export function startMagicArenaRound(context: ServerGameContext): MagicArenaRuntimeState {
   const state = createMagicArenaInitialState(context);
-  return beginPlanningRound(
+  return beginRound(
     transitionRoundState(state, "playing", context.now, {
       startedAt: context.now,
-      message: "Magic Arena beginnt. Plant verdeckt eure Aktionen."
+      message:
+        state.planningMode === "sequential"
+          ? "Magic Arena beginnt. Zieht Zug fuer Zug nacheinander."
+          : "Magic Arena beginnt. Plant verdeckt eure Aktionen."
     }),
     context.now
   );
 }
 
-export function createMagicArenaDebugState(playerCount = 2, now = Date.now()): MagicArenaRuntimeState {
+export function createMagicArenaDebugState(
+  playerCount = 2,
+  now = Date.now(),
+  planningMode: MagicArenaPlanningMode = MAGIC_ARENA_DEFAULT_PLANNING_MODE
+): MagicArenaRuntimeState {
   const safePlayerCount = Math.max(2, Math.min(4, Math.floor(playerCount)));
   const context: ServerGameContext = {
     roomCode: "DEBUG",
@@ -580,7 +785,9 @@ export function createMagicArenaDebugState(playerCount = 2, now = Date.now()): M
       estimatedRoundDurationMs: 240_000
     },
     previousRound: null,
-    roomSettings: {}
+    roomSettings: {
+      [magicArenaRoomSettingKeys.planningMode]: planningMode
+    }
   };
 
   return startMagicArenaRound(context);
@@ -665,7 +872,15 @@ export function validatePlannedAction(
     return { ok: false, error: "Deine Planung ist bereits gesperrt." };
   }
 
-  if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= getRequiredPlanningSlots(state, playerId)) {
+  if (state.planningMode === "sequential") {
+    if (state.activePlayerId !== playerId) {
+      return { ok: false, error: "Du bist gerade nicht am Zug." };
+    }
+
+    if (!Number.isInteger(slotIndex) || slotIndex !== state.planningSlotIndex) {
+      return { ok: false, error: "Dieser Slot ist nicht verfuegbar." };
+    }
+  } else if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= getRequiredPlanningSlots(state, playerId)) {
     return { ok: false, error: "Dieser Slot ist nicht verfuegbar." };
   }
 
@@ -2763,7 +2978,7 @@ function finishExecutionRound(state: MagicArenaRuntimeState, now: number): Magic
   resolveTimeRiftsForRound(state, state.roundIndex);
   maybeSpawnCrystalFieldForRound(state);
   maybeResolveRoundEvent(state);
-  return beginPlanningRound(state, now);
+  return beginRound(state, now);
 }
 
 export function handleMagicArenaInput(
@@ -2812,6 +3027,44 @@ export function handleMagicArenaInput(
   }
 
   if (input.type === "magic-arena:ready") {
+    if (nextState.planningMode === "sequential") {
+      if (nextState.activePlayerId !== input.playerId) {
+        appendLog(nextState, `${nextPlayer.name} ist gerade nicht am Zug.`, null);
+        nextState.updatedAt = context.now;
+        return nextState;
+      }
+
+      const action = (nextState.plannedActionsByPlayer[input.playerId] ?? []).find(
+        (entry) => entry.slotIndex === nextState.planningSlotIndex
+      );
+
+      if (!action) {
+        appendLog(nextState, `${nextPlayer.name} muss zuerst einen Zug waehlen.`, null);
+        nextState.updatedAt = context.now;
+        return nextState;
+      }
+
+      nextPlayer.ready = true;
+      nextState.magicPhase = "execution";
+      nextState.currentSlot = nextState.planningSlotIndex;
+      nextState.executionQueue = [
+        {
+          kind: "action",
+          roundIndex: nextState.roundIndex,
+          slotIndex: nextState.planningSlotIndex,
+          action
+        }
+      ];
+      nextState.nextExecutionAt = context.now;
+      appendLog(
+        nextState,
+        `${nextPlayer.name} fuehrt Zug ${nextState.planningSlotIndex + 1}/${PLANNED_ACTIONS_PER_ROUND} aus.`,
+        nextState.planningSlotIndex
+      );
+      nextState.updatedAt = context.now;
+      return nextState;
+    }
+
     const requiredSlots = getRequiredPlanningSlots(nextState, input.playerId);
     const plannedSlots = new Set((nextState.plannedActionsByPlayer[input.playerId] ?? []).map((action) => action.slotIndex));
 
@@ -2860,12 +3113,15 @@ export function tickMagicArena(
   const step = nextState.executionQueue.shift();
 
   if (!step) {
-    return finishExecutionRound(nextState, context.now);
+    return nextState.planningMode === "sequential"
+      ? advanceSequentialFlow(nextState, context.now)
+      : finishExecutionRound(nextState, context.now);
   }
 
   nextState.currentSlot = step.slotIndex;
   nextState.updatedAt = context.now;
   let shouldPauseAfterStep = true;
+  const activeActionBefore = nextState.activeAction;
 
   if (step.kind === "bombs") {
     resolveBombsForSlot(nextState, step.roundIndex, step.slotIndex);
@@ -2877,6 +3133,14 @@ export function tickMagicArena(
     shouldPauseAfterStep = resolveArenaDecayEndEffect(nextState);
   } else if (step.action) {
     resolvePlannedAction(nextState, step.action);
+  }
+
+  if (
+    nextState.planningMode === "sequential" &&
+    (step.kind === "bombs" || step.kind === "storm_clouds") &&
+    nextState.activeAction === activeActionBefore
+  ) {
+    shouldPauseAfterStep = false;
   }
 
   const afterWinCheck = finishIfNeeded(nextState, context.now);
@@ -2975,6 +3239,10 @@ export function toMagicArenaPublicState(
   return {
     gameId: "magic-arena",
     magicPhase: state.magicPhase,
+    planningMode: state.planningMode,
+    planningSlotIndex: state.planningSlotIndex,
+    totalPlanningSlots: PLANNED_ACTIONS_PER_ROUND,
+    activePlayerId: state.activePlayerId,
     roundIndex: state.roundIndex,
     currentSlot: state.currentSlot,
     initiativeStartIndex: state.initiativeStartIndex,

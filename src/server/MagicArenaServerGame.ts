@@ -6,6 +6,10 @@ import type {
 } from "../protocol.js";
 import { magicArenaManifest } from "../manifest.js";
 import {
+  MAGIC_ARENA_PLANNING_MODES,
+  magicArenaRoomSettingKeys
+} from "./magicArenaConfig.js";
+import {
   buildMagicArenaScore,
   createMagicArenaInitialState,
   handleMagicArenaInput,
@@ -17,6 +21,11 @@ import {
   type MagicArenaRuntimeState
 } from "./magicArenaRules.js";
 
+interface MagicArenaConfigureLobbyHostAction {
+  type: "configure-lobby";
+  planningMode?: unknown;
+}
+
 export const magicArenaServerGame: ServerGame<
   MagicArenaRuntimeState,
   MagicArenaInput,
@@ -25,6 +34,30 @@ export const magicArenaServerGame: ServerGame<
   manifest: magicArenaManifest,
   createInitialState(context) {
     return createMagicArenaInitialState(context);
+  },
+  handleHostAction(state, action, _context) {
+    const hostAction = action as Partial<MagicArenaConfigureLobbyHostAction> | null;
+
+    if (!hostAction?.type || hostAction.type !== "configure-lobby") {
+      return {};
+    }
+
+    if (state) {
+      return {};
+    }
+
+    if (
+      typeof hostAction.planningMode === "string" &&
+      (MAGIC_ARENA_PLANNING_MODES as readonly string[]).includes(hostAction.planningMode)
+    ) {
+      return {
+        roomSettings: {
+          [magicArenaRoomSettingKeys.planningMode]: hostAction.planningMode
+        }
+      };
+    }
+
+    return {};
   },
   startRound(_state, context) {
     return startMagicArenaRound(context);

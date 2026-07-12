@@ -9,6 +9,7 @@ export type MagicArenaFigureStatus = "alive" | "in_water" | "eliminated";
 export type MagicArenaFieldType = "weak" | "normal" | "strong";
 export type MagicArenaSpecialFieldType = "crystal" | "explosive" | "cracked";
 export type MagicArenaPhase = "setup" | "planning" | "execution" | "game_over";
+export type MagicArenaPlanningMode = "planned" | "sequential";
 export type MagicArenaRoundEventId =
   | "flood_wave"
   | "unstable_arena"
@@ -177,6 +178,10 @@ export interface MagicArenaActiveActionState {
 export interface MagicArenaPublicState {
   gameId: "magic-arena";
   magicPhase: MagicArenaPhase;
+  planningMode: MagicArenaPlanningMode;
+  planningSlotIndex: number;
+  totalPlanningSlots: number;
+  activePlayerId: string | null;
   roundIndex: number;
   currentSlot: number | null;
   initiativeStartIndex: number;

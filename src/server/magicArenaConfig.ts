@@ -52,6 +52,13 @@ export const PUSH_CHAIN_LIMIT = 10;
 export const EXECUTION_STEP_MS = 2100;
 export const MAX_ACTION_LOG_ENTRIES = 24;
 
+export const MAGIC_ARENA_PLANNING_MODES = ["planned", "sequential"] as const;
+export const MAGIC_ARENA_DEFAULT_PLANNING_MODE = "planned";
+
+export const magicArenaRoomSettingKeys = {
+  planningMode: "magicArenaPlanningMode"
+} as const;
+
 export const magicArenaColors = [
   "#38bdf8",
   "#fb7185",

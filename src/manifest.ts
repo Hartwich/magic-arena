@@ -1,4 +1,8 @@
 import type { GameManifest } from "@open-party-lab/game-core";
+import {
+  MAGIC_ARENA_DEFAULT_PLANNING_MODE,
+  magicArenaRoomSettingKeys
+} from "./server/magicArenaConfig.js";
 
 export const magicArenaManifest = {
   id: "magic-arena",
@@ -12,6 +16,32 @@ export const magicArenaManifest = {
   supportsTeams: false,
   estimatedRoundDurationMs: 240_000,
   roundCompletionMode: "wait_for_ready",
+  lobbySetup: {
+    title: "Magic Arena Setup",
+    description: "Waehle, wie die Zuege gespielt werden.",
+    fields: [
+      {
+        kind: "select",
+        id: "planningMode",
+        settingKey: magicArenaRoomSettingKeys.planningMode,
+        actionKey: "planningMode",
+        label: "Zugplanung",
+        defaultValue: MAGIC_ARENA_DEFAULT_PLANNING_MODE,
+        options: [
+          {
+            id: "planned",
+            label: "Vorausplanen",
+            description: "Alle vier Zuege werden verdeckt geplant und dann gemeinsam ausgefuehrt."
+          },
+          {
+            id: "sequential",
+            label: "Zug fuer Zug",
+            description: "Die Spieler ziehen nacheinander: Jeder Zug wird sofort ausgefuehrt."
+          }
+        ]
+      }
+    ]
+  },
   phaseDurations: {
     roundIntroMs: 1_600,
     countdownMs: 1_600,
