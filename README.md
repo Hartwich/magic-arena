@@ -56,6 +56,11 @@ open-party-lab party-game browser-game threejs phaser typescript local-multiplay
 
 The Platform should import only these public entrypoints.
 
+## Host Shortcuts
+
+- `S`: Toggles the host camera between static mode (default overview) and moving mode (smoothly follows the acting figure and looks toward the action target). The current mode is shown as a badge in the bottom-right corner of the host screen.
+- `D`: Toggles the debug overlay with player info and the event log.
+
 ## Development Checks
 
 ```bash

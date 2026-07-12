@@ -250,6 +250,10 @@ export class MagicArenaHostScene extends Phaser.Scene {
   private debugKeyHandler?: (event: KeyboardEvent) => void;
   private lastWidth = 0;
   private lastHeight = 0;
+  private cameraMode: "static" | "moving" = "static";
+  private cameraLookTarget = new THREE.Vector3(0, 0, 0);
+  private cameraModeBadge?: HTMLDivElement;
+  private lastCameraFrameAt = 0;
 
   constructor() {
     super(magicArenaManifest.hostView);
@@ -262,12 +266,22 @@ export class MagicArenaHostScene extends Phaser.Scene {
     this.createSurface();
     this.createScene();
     this.debugKeyHandler = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() !== "d" || event.repeat) {
+      if (event.repeat) {
         return;
       }
 
-      this.debugOverlayVisible = !this.debugOverlayVisible;
-      this.updateOverlay();
+      const key = event.key.toLowerCase();
+
+      if (key === "d") {
+        this.debugOverlayVisible = !this.debugOverlayVisible;
+        this.updateOverlay();
+        return;
+      }
+
+      if (key === "s") {
+        this.cameraMode = this.cameraMode === "static" ? "moving" : "static";
+        this.updateCameraModeBadge();
+      }
     };
     window.addEventListener("keydown", this.debugKeyHandler);
     this.unsubscribe = client.subscribe((appState) => {
@@ -318,6 +332,28 @@ export class MagicArenaHostScene extends Phaser.Scene {
       pointerEvents: "none"
     } satisfies Partial<CSSStyleDeclaration>);
     root.appendChild(overlay);
+
+    const cameraModeBadge = document.createElement("div");
+    Object.assign(cameraModeBadge.style, {
+      position: "absolute",
+      right: "16px",
+      bottom: "14px",
+      padding: "6px 12px",
+      borderRadius: "8px",
+      background: "rgba(2, 6, 23, 0.66)",
+      border: "1px solid rgba(125, 211, 252, 0.28)",
+      color: "#bae6fd",
+      fontFamily: "Inter, system-ui, sans-serif",
+      fontSize: "13px",
+      fontWeight: "800",
+      letterSpacing: "0.02em",
+      pointerEvents: "none",
+      zIndex: "2"
+    } satisfies Partial<CSSStyleDeclaration>);
+    root.appendChild(cameraModeBadge);
+    this.cameraModeBadge = cameraModeBadge;
+    this.updateCameraModeBadge();
+
     const style = document.createElement("style");
     style.textContent = `
       @keyframes magicArenaResultReveal {
@@ -396,13 +432,108 @@ export class MagicArenaHostScene extends Phaser.Scene {
       this.lastHeight = height;
       if (this.camera) {
         this.camera.aspect = width / height;
-        this.camera.position.set(0, width < 900 ? 8.8 : 7.6, width < 900 ? 8.6 : 7.8);
-        this.camera.lookAt(0, 0, 0);
         this.camera.updateProjectionMatrix();
       }
     }
 
     return { width, height };
+  }
+
+  private getDefaultCameraPose(width: number): { position: THREE.Vector3; look: THREE.Vector3 } {
+    const compact = width > 0 && width < 900;
+
+    return {
+      position: new THREE.Vector3(0, compact ? 8.8 : 7.6, compact ? 8.6 : 7.8),
+      look: new THREE.Vector3(0, 0, 0)
+    };
+  }
+
+  private getMovingCameraPose(width: number): { position: THREE.Vector3; look: THREE.Vector3 } | null {
+    const state = this.latestState;
+    const active = state?.activeAction;
+
+    if (!state || !active || state.magicPhase !== "execution") {
+      return null;
+    }
+
+    if (active.kind === "round_end") {
+      return null;
+    }
+
+    const origin = active.originCoord ? axialToWorld(active.originCoord) : null;
+    const pathEnd = active.path && active.path.length > 0
+      ? axialToWorld(active.path[active.path.length - 1] as MagicArenaCoord)
+      : null;
+    const target = active.targetCoord ? axialToWorld(active.targetCoord) : pathEnd;
+    let focus: THREE.Vector3 | null = null;
+
+    if (origin && target) {
+      // Look slightly toward the target of the action.
+      focus = origin.clone().lerp(target, 0.55);
+    } else if (origin || target) {
+      focus = (origin ?? target)?.clone() ?? null;
+    } else if (active.affectedCoords && active.affectedCoords.length > 0) {
+      const average = new THREE.Vector3();
+
+      for (const coord of active.affectedCoords) {
+        average.add(axialToWorld(coord));
+      }
+
+      focus = average.multiplyScalar(1 / active.affectedCoords.length);
+    }
+
+    if (!focus) {
+      return null;
+    }
+
+    focus.y = 0;
+
+    // Keep the camera anchored over the board so the arena stays readable.
+    const maxFocusRadius = 3.4;
+
+    if (focus.length() > maxFocusRadius) {
+      focus.setLength(maxFocusRadius);
+    }
+
+    const compact = width > 0 && width < 900;
+    const offset = new THREE.Vector3(0, compact ? 6.6 : 5.6, compact ? 6.4 : 5.8);
+
+    return {
+      position: focus.clone().add(offset),
+      look: focus
+    };
+  }
+
+  private updateCameraPose(width: number): void {
+    const camera = this.camera;
+
+    if (!camera) {
+      return;
+    }
+
+    const now = performance.now();
+    const deltaMs = this.lastCameraFrameAt > 0 ? Math.min(100, now - this.lastCameraFrameAt) : 16;
+    this.lastCameraFrameAt = now;
+
+    const pose = (this.cameraMode === "moving" ? this.getMovingCameraPose(width) : null)
+      ?? this.getDefaultCameraPose(width);
+
+    // Frame-rate independent damping for smooth, motion-sickness-friendly transitions.
+    const damping = 1 - Math.exp(-deltaMs / 450);
+
+    camera.position.lerp(pose.position, damping);
+    this.cameraLookTarget.lerp(pose.look, damping);
+    camera.lookAt(this.cameraLookTarget);
+  }
+
+  private updateCameraModeBadge(): void {
+    if (!this.cameraModeBadge) {
+      return;
+    }
+
+    this.cameraModeBadge.textContent = this.cameraMode === "moving"
+      ? "Kamera: Verfolgung [S]"
+      : "Kamera: Statisch [S]";
   }
 
   private renderThree(): void {
@@ -419,6 +550,8 @@ export class MagicArenaHostScene extends Phaser.Scene {
     if (width <= 0 || height <= 0) {
       return;
     }
+
+    this.updateCameraPose(width);
 
     if (this.boardGroup) {
       this.boardGroup.rotation.y = Math.sin(Date.now() / 3600) * 0.025;
@@ -2215,6 +2348,10 @@ export class MagicArenaHostScene extends Phaser.Scene {
     this.activeActionEffectStartAt = 0;
     this.currentEffectStartAt = 0;
     this.currentEffectDurationMs = actionEffectMs;
+    this.cameraModeBadge = undefined;
+    this.cameraMode = "static";
+    this.cameraLookTarget.set(0, 0, 0);
+    this.lastCameraFrameAt = 0;
   }
 }
 
