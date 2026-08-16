@@ -62,6 +62,7 @@ import {
   PUSH_CHAIN_LIMIT,
   ROUND_EVENT_CHANCE,
   ROUND_EVENT_START_ROUND,
+  SEQUENTIAL_ACTIONS_PER_ROUND,
   STARTING_HAND_SIZE,
   STORM_CLOUD_ACTIVE_ROUNDS,
   THIN_FLOOR_EXTRA_DAMAGE_CHANCE,
@@ -378,6 +379,13 @@ function isFreeIntactField(state: MagicArenaRuntimeState, coord: MagicArenaCoord
   return Boolean(field?.exists && field.occupants.length < MAX_OCCUPANTS_PER_FIELD);
 }
 
+/**
+ * Planned mode plans four actions per round, sequential mode gives every player a single turn.
+ */
+export function getSlotsPerRound(state: Pick<MagicArenaRuntimeState, "planningMode">): number {
+  return state.planningMode === "sequential" ? SEQUENTIAL_ACTIONS_PER_ROUND : PLANNED_ACTIONS_PER_ROUND;
+}
+
 export function playerHasPlannableFigure(state: MagicArenaRuntimeState, playerId: string): boolean {
   const player = getPlayer(state, playerId);
 
@@ -543,11 +551,7 @@ function startNextSequentialTurn(state: MagicArenaRuntimeState, now: number): Ma
         ...player,
         ready: false
       }));
-      appendLog(
-        state,
-        `${getPlayerName(state, playerId)} ist am Zug (Zug ${state.planningSlotIndex + 1}/${PLANNED_ACTIONS_PER_ROUND}).`,
-        state.planningSlotIndex
-      );
+      appendLog(state, `${getPlayerName(state, playerId)} ist am Zug.`, state.planningSlotIndex);
       state.updatedAt = now;
       return state;
     }
@@ -583,7 +587,9 @@ function advanceSequentialFlow(state: MagicArenaRuntimeState, now: number): Magi
   }
 
   if (state.sequentialStage === "storm_clouds") {
-    if (state.planningSlotIndex < PLANNED_ACTIONS_PER_ROUND - 1) {
+    const lastSlotIndex = getSlotsPerRound(state) - 1;
+
+    if (state.planningSlotIndex < lastSlotIndex) {
       state.planningSlotIndex += 1;
       state.sequentialStage = "bombs";
       state.magicPhase = "execution";
@@ -607,14 +613,14 @@ function advanceSequentialFlow(state: MagicArenaRuntimeState, now: number): Magi
       state.executionQueue.push({
         kind: "round_event_end",
         roundIndex: state.roundIndex,
-        slotIndex: PLANNED_ACTIONS_PER_ROUND - 1
+        slotIndex: lastSlotIndex
       });
     }
 
     state.executionQueue.push({
       kind: "arena_decay",
       roundIndex: state.roundIndex,
-      slotIndex: PLANNED_ACTIONS_PER_ROUND - 1
+      slotIndex: lastSlotIndex
     });
     state.nextExecutionAt = now;
     state.updatedAt = now;
@@ -1802,12 +1808,13 @@ function resolveBombPlacement(state: MagicArenaRuntimeState, figure: MagicArenaF
 
   const slotIndex = action.slotIndex;
   const nextSlot = slotIndex + 1;
+  const slotsPerRound = getSlotsPerRound(state);
   const bomb: MagicArenaPendingBombState = {
     bombId: `bomb-${state.nextBombId}`,
     ownerPlayerId: figure.playerId,
     coord: { ...action.targetCoord },
-    explodeRound: nextSlot >= PLANNED_ACTIONS_PER_ROUND ? state.roundIndex + 1 : state.roundIndex,
-    explodeSlot: nextSlot >= PLANNED_ACTIONS_PER_ROUND ? 0 : nextSlot
+    explodeRound: nextSlot >= slotsPerRound ? state.roundIndex + 1 : state.roundIndex,
+    explodeSlot: nextSlot >= slotsPerRound ? 0 : nextSlot
   };
   state.nextBombId += 1;
   state.pendingBombs.push(bomb);
@@ -2511,9 +2518,10 @@ export function resolveStormCloudsForSlot(
   const clouds = state.delayedEffects.filter(
     (effect) => isStormCloudActive(effect, roundIndex)
   );
+  const isLastSlotOfRound = slotIndex >= getSlotsPerRound(state) - 1;
 
   if (clouds.length === 0) {
-    if (slotIndex >= PLANNED_ACTIONS_PER_ROUND - 1) {
+    if (isLastSlotOfRound) {
       state.delayedEffects = state.delayedEffects.filter((effect) => {
         if (effect.type !== "storm_cloud" || (effect.expiresRound ?? effect.triggerRound) >= roundIndex) {
           return true;
@@ -2558,7 +2566,7 @@ export function resolveStormCloudsForSlot(
     };
   }
 
-  if (slotIndex >= PLANNED_ACTIONS_PER_ROUND - 1) {
+  if (isLastSlotOfRound) {
     state.delayedEffects = state.delayedEffects.filter((effect) => {
       if (effect.type !== "storm_cloud" || (effect.expiresRound ?? effect.triggerRound) > roundIndex) {
         return true;
@@ -3026,43 +3034,57 @@ export function handleMagicArenaInput(
     return nextState;
   }
 
-  if (input.type === "magic-arena:ready") {
-    if (nextState.planningMode === "sequential") {
-      if (nextState.activePlayerId !== input.playerId) {
-        appendLog(nextState, `${nextPlayer.name} ist gerade nicht am Zug.`, null);
-        nextState.updatedAt = context.now;
-        return nextState;
-      }
+  if (input.type === "magic-arena:play-turn") {
+    if (nextState.planningMode !== "sequential") {
+      return state;
+    }
 
-      const action = (nextState.plannedActionsByPlayer[input.playerId] ?? []).find(
-        (entry) => entry.slotIndex === nextState.planningSlotIndex
-      );
-
-      if (!action) {
-        appendLog(nextState, `${nextPlayer.name} muss zuerst einen Zug waehlen.`, null);
-        nextState.updatedAt = context.now;
-        return nextState;
-      }
-
-      nextPlayer.ready = true;
-      nextState.magicPhase = "execution";
-      nextState.currentSlot = nextState.planningSlotIndex;
-      nextState.executionQueue = [
-        {
-          kind: "action",
-          roundIndex: nextState.roundIndex,
-          slotIndex: nextState.planningSlotIndex,
-          action
-        }
-      ];
-      nextState.nextExecutionAt = context.now;
-      appendLog(
-        nextState,
-        `${nextPlayer.name} fuehrt Zug ${nextState.planningSlotIndex + 1}/${PLANNED_ACTIONS_PER_ROUND} aus.`,
-        nextState.planningSlotIndex
-      );
+    if (nextState.activePlayerId !== input.playerId) {
+      appendLog(nextState, `${nextPlayer.name} ist gerade nicht am Zug.`, null);
       nextState.updatedAt = context.now;
       return nextState;
+    }
+
+    const validation = validatePlannedAction(
+      nextState,
+      input.playerId,
+      nextState.planningSlotIndex,
+      input.action
+    );
+
+    if (!validation.ok || !validation.action) {
+      appendLog(nextState, validation.ok ? "Der Zug ist unvollstaendig." : validation.error, null);
+      nextState.updatedAt = context.now;
+      return nextState;
+    }
+
+    const plannedAction = validation.action;
+    nextState.plannedActionsByPlayer[input.playerId] = [
+      ...(nextState.plannedActionsByPlayer[input.playerId] ?? []).filter(
+        (entry) => entry.slotIndex !== nextState.planningSlotIndex
+      ),
+      plannedAction
+    ].sort((left, right) => left.slotIndex - right.slotIndex);
+    nextPlayer.ready = true;
+    nextState.magicPhase = "execution";
+    nextState.currentSlot = nextState.planningSlotIndex;
+    nextState.executionQueue = [
+      {
+        kind: "action",
+        roundIndex: nextState.roundIndex,
+        slotIndex: nextState.planningSlotIndex,
+        action: plannedAction
+      }
+    ];
+    nextState.nextExecutionAt = context.now;
+    nextState.updatedAt = context.now;
+    return nextState;
+  }
+
+  if (input.type === "magic-arena:ready") {
+    if (nextState.planningMode === "sequential") {
+      // Sequential turns are submitted atomically through play-turn.
+      return state;
     }
 
     const requiredSlots = getRequiredPlanningSlots(nextState, input.playerId);
@@ -3241,7 +3263,7 @@ export function toMagicArenaPublicState(
     magicPhase: state.magicPhase,
     planningMode: state.planningMode,
     planningSlotIndex: state.planningSlotIndex,
-    totalPlanningSlots: PLANNED_ACTIONS_PER_ROUND,
+    totalPlanningSlots: getSlotsPerRound(state),
     activePlayerId: state.activePlayerId,
     roundIndex: state.roundIndex,
     currentSlot: state.currentSlot,

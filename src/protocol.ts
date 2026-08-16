@@ -222,6 +222,14 @@ export interface MagicArenaReadyInput extends PlayerInput {
   type: "magic-arena:ready";
 }
 
+/**
+ * Sequential mode: plan and immediately execute the acting player's single turn.
+ */
+export interface MagicArenaPlayTurnInput extends PlayerInput {
+  type: "magic-arena:play-turn";
+  action: Omit<MagicArenaPlannedAction, "playerId" | "slotIndex">;
+}
+
 export interface MagicArenaDebugStartInput extends PlayerInput {
   type: "magic-arena:debug-start";
   playerCount: number;
@@ -230,4 +238,5 @@ export interface MagicArenaDebugStartInput extends PlayerInput {
 export type MagicArenaInput =
   | MagicArenaPlanSlotInput
   | MagicArenaReadyInput
+  | MagicArenaPlayTurnInput
   | MagicArenaDebugStartInput;

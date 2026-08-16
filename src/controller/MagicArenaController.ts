@@ -3,6 +3,7 @@ import type { MagicArenaLayoutModel } from "./platform-layout-models.js";
 import type { ControllerGameRenderContext } from "./platform-registry.js";
 import {
   createMagicArenaPlanSlotInput,
+  createMagicArenaPlayTurnInput,
   createMagicArenaReadyInput
 } from "./magicArenaBindings.js";
 
@@ -23,14 +24,15 @@ export function buildMagicArenaControllerModel(context: ControllerGameRenderCont
     gameState.activePlayerId ??
     "";
 
+  const multiTurnSuffix = totalSlots > 1 ? ` ${planningSlotIndex + 1}/${totalSlots}` : "";
   const planningSubtitle = sequential
     ? isOwnTurn
       ? en
-        ? `Your turn (move ${planningSlotIndex + 1}/${totalSlots})`
-        : `Du bist am Zug (Zug ${planningSlotIndex + 1}/${totalSlots})`
+        ? `Your turn${multiTurnSuffix}`
+        : `Du bist am Zug${multiTurnSuffix}`
       : en
-        ? `Waiting for ${activePlayerName} (move ${planningSlotIndex + 1}/${totalSlots})`
-        : `Warte auf ${activePlayerName} (Zug ${planningSlotIndex + 1}/${totalSlots})`
+        ? `Waiting for ${activePlayerName}`
+        : `Warte auf ${activePlayerName}`
     : `${en ? "Planning" : "Planung"} ${plannedCount}/${requiredSlots}`;
 
   return {
@@ -60,6 +62,7 @@ export function buildMagicArenaControllerModel(context: ControllerGameRenderCont
     currentPlayerId: playerId,
     state: gameState,
     onPlanSlot: (slotIndex, action) => onInput(createMagicArenaPlanSlotInput(playerId, slotIndex, action)),
-    onReady: () => onInput(createMagicArenaReadyInput(playerId))
+    onReady: () => onInput(createMagicArenaReadyInput(playerId)),
+    onPlayTurn: (action) => onInput(createMagicArenaPlayTurnInput(playerId, action))
   };
 }

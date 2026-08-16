@@ -452,56 +452,101 @@ export class MagicArenaHostScene extends Phaser.Scene {
     const state = this.latestState;
     const active = state?.activeAction;
 
-    if (!state || !active || state.magicPhase !== "execution") {
+    if (!state || !active || state.magicPhase !== "execution" || active.kind === "round_end") {
       return null;
-    }
-
-    if (active.kind === "round_end") {
-      return null;
-    }
-
-    const origin = active.originCoord ? axialToWorld(active.originCoord) : null;
-    const pathEnd = active.path && active.path.length > 0
-      ? axialToWorld(active.path[active.path.length - 1] as MagicArenaCoord)
-      : null;
-    const target = active.targetCoord ? axialToWorld(active.targetCoord) : pathEnd;
-    let focus: THREE.Vector3 | null = null;
-
-    if (origin && target) {
-      // Look slightly toward the target of the action.
-      focus = origin.clone().lerp(target, 0.55);
-    } else if (origin || target) {
-      focus = (origin ?? target)?.clone() ?? null;
-    } else if (active.affectedCoords && active.affectedCoords.length > 0) {
-      const average = new THREE.Vector3();
-
-      for (const coord of active.affectedCoords) {
-        average.add(axialToWorld(coord));
-      }
-
-      focus = average.multiplyScalar(1 / active.affectedCoords.length);
-    }
-
-    if (!focus) {
-      return null;
-    }
-
-    focus.y = 0;
-
-    // Keep the camera anchored over the board so the arena stays readable.
-    const maxFocusRadius = 3.4;
-
-    if (focus.length() > maxFocusRadius) {
-      focus.setLength(maxFocusRadius);
     }
 
     const compact = width > 0 && width < 900;
-    const offset = new THREE.Vector3(0, compact ? 6.6 : 5.6, compact ? 6.4 : 5.8);
+    const shoulderHeight = 0.62;
+    const pathEnd = active.path && active.path.length > 0
+      ? axialToWorld(active.path[active.path.length - 1] as MagicArenaCoord)
+      : null;
+    const actorCoord = active.originCoord ?? this.getActorCoord(active);
+    const actor = actorCoord ? axialToWorld(actorCoord) : null;
+    const target = active.targetCoord
+      ? axialToWorld(active.targetCoord)
+      : pathEnd ?? this.getAffectedCenter(active);
 
-    return {
-      position: focus.clone().add(offset),
-      look: focus
-    };
+    // Area-only events (bombs, round events): frame the affected area from the default angle.
+    if (!actor) {
+      const center = target ?? this.getAffectedCenter(active);
+
+      if (!center) {
+        return null;
+      }
+
+      center.y = 0;
+      return {
+        position: center.clone().add(new THREE.Vector3(0, compact ? 5.4 : 4.6, compact ? 5.2 : 4.6)),
+        look: center.clone().setY(0.2)
+      };
+    }
+
+    actor.y = 0;
+
+    // Over-the-shoulder: sit behind the acting figure and look past it toward the action.
+    const forward = target
+      ? target.clone().setY(0).sub(actor)
+      : new THREE.Vector3(0, 0, 0).sub(actor);
+
+    if (forward.lengthSq() < 0.0001) {
+      // No meaningful direction (dig, stealth): look from the front-facing default angle.
+      forward.set(0, 0, -1);
+    }
+
+    forward.normalize();
+
+    const backDistance = compact ? 2.9 : 2.5;
+    const cameraHeight = compact ? 2.0 : 1.75;
+    const lateralOffset = 0.55;
+    const right = new THREE.Vector3(-forward.z, 0, forward.x);
+    const position = actor
+      .clone()
+      .addScaledVector(forward, -backDistance)
+      .addScaledVector(right, lateralOffset);
+    position.y = cameraHeight;
+
+    // Aim past the figure's shoulder at the target, or at the figure itself when it acts in place.
+    const lookAt = target
+      ? actor.clone().lerp(target.clone().setY(0), 0.85)
+      : actor.clone().addScaledVector(forward, 1.2);
+    lookAt.y = shoulderHeight;
+
+    return { position, look: lookAt };
+  }
+
+  private getActorCoord(active: MagicArenaActiveActionState): MagicArenaCoord | null {
+    const state = this.latestState;
+
+    if (!state || !active.figureId) {
+      return null;
+    }
+
+    for (const player of state.players) {
+      const figure = player.figures.find((entry) => entry.figureId === active.figureId);
+
+      if (figure) {
+        return figure.coord ?? figure.waterCoord ?? null;
+      }
+    }
+
+    return null;
+  }
+
+  private getAffectedCenter(active: MagicArenaActiveActionState): THREE.Vector3 | null {
+    const coords = active.affectedCoords ?? [];
+
+    if (coords.length === 0) {
+      return null;
+    }
+
+    const center = new THREE.Vector3();
+
+    for (const coord of coords) {
+      center.add(axialToWorld(coord));
+    }
+
+    return center.multiplyScalar(1 / coords.length);
   }
 
   private updateCameraPose(width: number): void {

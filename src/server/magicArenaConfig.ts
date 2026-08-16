@@ -55,6 +55,9 @@ export const MAX_ACTION_LOG_ENTRIES = 24;
 export const MAGIC_ARENA_PLANNING_MODES = ["planned", "sequential"] as const;
 export const MAGIC_ARENA_DEFAULT_PLANNING_MODE = "planned";
 
+/** Sequential mode: every player takes exactly one turn per round. */
+export const SEQUENTIAL_ACTIONS_PER_ROUND = 1;
+
 export const magicArenaRoomSettingKeys = {
   planningMode: "magicArenaPlanningMode"
 } as const;

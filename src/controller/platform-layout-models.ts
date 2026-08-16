@@ -29,4 +29,6 @@ export interface MagicArenaLayoutModel {
     action: Omit<MagicArenaPlannedAction, "playerId" | "slotIndex"> | null
   ) => void;
   onReady: () => void;
+  /** Sequential mode: submit and immediately execute the current turn. */
+  onPlayTurn: (action: Omit<MagicArenaPlannedAction, "playerId" | "slotIndex">) => void;
 }
