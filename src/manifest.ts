@@ -48,7 +48,11 @@ export const magicArenaManifest = {
     lockedMs: 3_000,
     resultMs: 5_000,
     scoreboardMs: 5_000
-  }
+  },
+
+  ownsScreens: ["round_intro", "result"],
+  visual: { accent: "#6f6aa0", eyebrow: "Magic" },
+  audio: { track: { profile: "battle", bpm: 104, rootMidi: 48, masterGain: 0.15 } },
 } as const satisfies GameManifest;
 
 export const manifest = magicArenaManifest;

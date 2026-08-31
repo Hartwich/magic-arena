@@ -7,6 +7,8 @@ import type {
   MagicArenaPublicState
 } from "../protocol.js";
 import { magicArenaManifest } from "../manifest.js";
+import { renderRoundScreens } from "./roundScreens.js";
+import { tokens } from "./platformTheme.js";
 
 interface HostClientLike {
   subscribe(callback: (state: HostAppStateLike) => void): () => void;
@@ -91,7 +93,7 @@ function fieldColor(type: string, hp: number, maxHp: number): string {
   const ratio = Math.max(0, Math.min(1, hp / Math.max(1, maxHp)));
 
   if (type === "strong") {
-    return ratio < 0.45 ? "#64748b" : "#94a3b8";
+    return ratio < 0.45 ? tokens().color.muted : tokens().color.muted;
   }
 
   if (type === "weak") {
@@ -157,7 +159,17 @@ function disposeObject(object: THREE.Object3D): void {
   });
 }
 
-function createTextSprite(text: string, color = "#f8fafc", background = "rgba(2,6,23,0.64)"): THREE.Sprite {
+/**
+ * A floating label over the 3D scene.
+ *
+ * Text and scrim are taken from the same theme on purpose: a fixed dark scrim
+ * behind theme-coloured text would leave dark ink on dark in the light theme.
+ */
+function createTextSprite(
+  text: string,
+  color = tokens().color.text,
+  background = tokens().scrim.backdrop
+): THREE.Sprite {
   const canvas = document.createElement("canvas");
   canvas.width = 160;
   canvas.height = 72;
@@ -262,7 +274,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
   create(): void {
     const client = this.registry.get("hostClient") as HostClientLike;
 
-    this.cameras.main.setBackgroundColor("#06111f");
+    this.cameras.main.setBackgroundColor(tokens().color.background);
     this.createSurface();
     this.createScene();
     this.debugKeyHandler = (event: KeyboardEvent) => {
@@ -285,6 +297,11 @@ export class MagicArenaHostScene extends Phaser.Scene {
     };
     window.addEventListener("keydown", this.debugKeyHandler);
     this.unsubscribe = client.subscribe((appState) => {
+      // Intro and result screens belong to this game, not the platform.
+      if (renderRoundScreens(this, appState)) {
+        return;
+      }
+
       this.latestState = (appState.game?.state ?? null) as MagicArenaPublicState | null;
       this.rebuildBoard();
       this.updateOverlay();
@@ -306,7 +323,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
       position: "absolute",
       inset: "0",
       overflow: "hidden",
-      background: "#06111f",
+      background: tokens().color.background,
       pointerEvents: "none",
       zIndex: "1"
     } satisfies Partial<CSSStyleDeclaration>);
@@ -328,7 +345,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
       alignItems: "start",
       gap: "14px",
       fontFamily: "Inter, system-ui, sans-serif",
-      color: "#e2e8f0",
+      color: tokens().color.textSoft,
       pointerEvents: "none"
     } satisfies Partial<CSSStyleDeclaration>);
     root.appendChild(overlay);
@@ -1094,7 +1111,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
         const crack = new THREE.Line(
           new THREE.BufferGeometry().setFromPoints(points),
           new THREE.LineBasicMaterial({
-            color: "#020617",
+            color: tokens().color.background,
             transparent: true,
             opacity: 0.95,
             depthWrite: false
@@ -1251,7 +1268,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
     hpBar.position.y = figure.status === "in_water" ? 0.34 : 0.56;
     root.add(hpBar);
 
-    const name = createTextSprite(this.getFigureDisplayName(figure), "#f8fafc", "rgba(15,23,42,0.68)");
+    const name = createTextSprite(this.getFigureDisplayName(figure), tokens().color.text, "rgba(15,23,42,0.68)");
     name.position.y = figure.status === "in_water" ? 0.52 : 0.76;
     name.scale.set(0.56, 0.21, 1);
     root.add(name);
@@ -1279,7 +1296,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
     for (const transition of transitions) {
       const playerColor =
         playersById.get(transition.type === "rescue" ? transition.figure.playerId : transition.figure.playerId)?.player.color ??
-        "#f8fafc";
+        tokens().color.text;
 
       if (transition.type === "rescue") {
         this.addRescueVisual(group, transition.fromCoord, transition.toCoord, playerColor, fieldHeights);
@@ -1339,7 +1356,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
     root.add(spirit, head, halo, leftWing, rightWing, glimmer);
     group.add(root);
 
-    this.addBurstCore(group, base, "#f8fafc", color, 0.12, 0.52);
+    this.addBurstCore(group, base, tokens().color.text, color, 0.12, 0.52);
   }
 
   private addBombVisual(group: THREE.Group, coord: MagicArenaCoord, fieldHeight: number): void {
@@ -1539,7 +1556,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
       case "dig":
         return "#a3e635";
       case "stealth":
-        return "#94a3b8";
+        return tokens().color.muted;
       case "kraken":
       case "storm_cloud":
         return "#22d3ee";
@@ -1655,7 +1672,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
       new THREE.Mesh(new THREE.SphereGeometry(0.16, 14, 10), createGlowMaterial("#facc15", 0.12))
     );
     group.add(bomb);
-    this.addActionRingVisual(group, targetCoord, "#020617", fieldHeights.get(axialKey(targetCoord)) ?? 0.12, 0);
+    this.addActionRingVisual(group, targetCoord, tokens().color.background, fieldHeights.get(axialKey(targetCoord)) ?? 0.12, 0);
   }
 
   private addTerrainCrackEffect(
@@ -1723,7 +1740,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
     }
 
     const target = this.getEffectWorld(targetCoord, fieldHeights, 0.46);
-    this.addBurstCore(group, target, "#f8fafc", "#38bdf8", 0.16, 0.75);
+    this.addBurstCore(group, target, tokens().color.text, "#38bdf8", 0.16, 0.75);
     this.addActionRingVisual(group, targetCoord, "#38bdf8", fieldHeights.get(axialKey(targetCoord)) ?? 0.12, 0);
 
     if (originCoord) {
@@ -1841,7 +1858,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
 
     const center = this.getEffectWorld(targetCoord, fieldHeights, 0.5);
     this.addActionRingVisual(group, targetCoord, "#a78bfa", fieldHeights.get(axialKey(targetCoord)) ?? 0.12, 0);
-    this.addBurstCore(group, center, "#f8fafc", "#8b5cf6", 0.15, 0.8);
+    this.addBurstCore(group, center, tokens().color.text, "#8b5cf6", 0.15, 0.8);
   }
 
   private addMinePlacementEffect(
@@ -2007,7 +2024,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
       const bolt = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints(points),
         new THREE.LineBasicMaterial({
-          color: boltIndex === 0 ? "#f8fafc" : "#7dd3fc",
+          color: boltIndex === 0 ? tokens().color.text : "#7dd3fc",
           transparent: true,
           opacity: boltIndex === 0 ? 1 : 0.72,
           depthWrite: false,
@@ -2019,7 +2036,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
       group.add(bolt);
     }
 
-    this.addBurstCore(group, impact, "#f8fafc", "#38bdf8", 0.18, 0.8);
+    this.addBurstCore(group, impact, tokens().color.text, "#38bdf8", 0.18, 0.8);
     this.addActionRingVisual(group, coord, "#bae6fd", fieldHeights.get(axialKey(coord)) ?? 0.12, 0);
   }
 
@@ -2242,7 +2259,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
     const title = document.createElement("strong");
     title.textContent = "Magic Arena";
     title.style.fontSize = "20px";
-    title.style.color = "#f8fafc";
+    title.style.color = tokens().color.text;
     const phase = document.createElement("span");
     const activePlayerName = state.activePlayerId
       ? state.players.find((player) => player.playerId === state.activePlayerId)?.name ?? state.activePlayerId
@@ -2321,7 +2338,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
       padding: visible ? (isRoundEvent ? "18px 28px" : "14px 22px") : "0",
       borderRadius: "8px",
       textAlign: "center",
-      color: "#f8fafc",
+      color: tokens().color.text,
       fontSize: isRoundEvent ? "28px" : "24px",
       fontWeight: "950",
       letterSpacing: "0",
@@ -2347,7 +2364,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
       Object.assign(line.style, {
         padding: "6px 0",
         borderBottom: "1px solid rgba(148,163,184,0.12)",
-        color: "#cbd5e1",
+        color: tokens().color.textSoft,
         fontSize: "13px",
         lineHeight: "1.25"
       } satisfies Partial<CSSStyleDeclaration>);
