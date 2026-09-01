@@ -51,7 +51,7 @@ export const magicArenaManifest = {
   },
 
   ownsScreens: ["round_intro", "result"],
-  visual: { accent: "#6f6aa0", eyebrow: "Magic" },
+  visual: { accent: "#6f6aa0", icon: "sparkles", eyebrow: "Magic" },
   audio: { track: { profile: "battle", bpm: 104, rootMidi: 48, masterGain: 0.15 } },
 } as const satisfies GameManifest;
 
