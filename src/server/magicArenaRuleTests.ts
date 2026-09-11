@@ -67,6 +67,7 @@ function createContext(playerCount = 2, now = 1_000): ServerGameContext {
     now,
     deltaMs: 0,
     language: "de",
+    theme: "light",
     selectedGame: {
       id: "magic-arena",
       displayName: "Magic Arena",

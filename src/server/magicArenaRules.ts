@@ -778,6 +778,7 @@ export function createMagicArenaDebugState(
     now,
     deltaMs: 0,
     language: "de",
+    theme: "light",
     selectedGame: {
       id: "magic-arena",
       displayName: "Magic Arena",
