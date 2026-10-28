@@ -9,6 +9,8 @@ import type {
 import { magicArenaManifest } from "../manifest.js";
 import { renderRoundScreens } from "./roundScreens.js";
 import { tokens } from "./platformTheme.js";
+import { animateMage, animateOcean, arenaPalette, createMage, createOcean, type MageRig } from "./diorama.js";
+import { effectRotation, fitIslandOverview } from "./presentationMotion.js";
 
 interface HostClientLike {
   subscribe(callback: (state: HostAppStateLike) => void): () => void;
@@ -42,6 +44,7 @@ type MagicArenaEffect = (
   | { mode: "quake"; createdAt: number; baseScale: number; baseY: number }
   | { mode: "hopPath"; createdAt: number; points: THREE.Vector3[]; baseScale: number; spin?: number }
   | { mode: "rune"; createdAt: number; baseScale: number; baseY: number }
+  | { mode: "debris"; createdAt: number; start: THREE.Vector3; velocity: THREE.Vector3 }
 ) & { durationMs?: number };
 
 type MagicArenaFigureSnapshot = {
@@ -93,20 +96,21 @@ function fieldColor(type: string, hp: number, maxHp: number): string {
   const ratio = Math.max(0, Math.min(1, hp / Math.max(1, maxHp)));
 
   if (type === "strong") {
-    return ratio < 0.45 ? tokens().color.muted : tokens().color.muted;
+    return ratio < 0.45 ? "#635b4e" : "#81877b";
   }
 
   if (type === "weak") {
-    return ratio < 0.45 ? "#a16207" : "#facc15";
+    return ratio < 0.45 ? "#705139" : "#aa9062";
   }
 
-  return ratio < 0.45 ? "#0f766e" : "#2dd4bf";
+  return ratio < 0.45 ? "#46534b" : "#60776a";
 }
 
 function createMaterial(color: string, opacity = 1): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
     color,
-    roughness: 0.58,
+    roughness: 0.85,
+    flatShading: true,
     metalness: 0.06,
     transparent: opacity < 1,
     opacity
@@ -140,6 +144,7 @@ function setObjectOpacity(object: THREE.Object3D, opacity: number): void {
 }
 
 function disposeObject(object: THREE.Object3D): void {
+  const textures = new Set<THREE.Texture>();
   object.traverse((child) => {
     const mesh = child as THREE.Mesh;
 
@@ -151,12 +156,15 @@ function disposeObject(object: THREE.Object3D): void {
 
     if (Array.isArray(material)) {
       for (const entry of material) {
+        for (const value of Object.values(entry)) if (value instanceof THREE.Texture) textures.add(value);
         entry.dispose();
       }
     } else if (material) {
+      for (const value of Object.values(material)) if (value instanceof THREE.Texture) textures.add(value);
       material.dispose();
     }
   });
+  for (const texture of textures) texture.dispose();
 }
 
 /**
@@ -262,10 +270,19 @@ export class MagicArenaHostScene extends Phaser.Scene {
   private debugKeyHandler?: (event: KeyboardEvent) => void;
   private lastWidth = 0;
   private lastHeight = 0;
-  private cameraMode: "static" | "moving" = "static";
+  private cameraMode: "static" | "moving" = "moving";
   private cameraLookTarget = new THREE.Vector3(0, 0, 0);
   private cameraModeBadge?: HTMLDivElement;
   private lastCameraFrameAt = 0;
+  private mageRigs: Array<{ rig: MageRig; figureId: string; walking: boolean }> = [];
+  private reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  private ocean?: THREE.Group;
+  private boardVisualKey: string | null = null;
+  private overviewPose?: { key: string; position: THREE.Vector3; look: THREE.Vector3 };
+  private mageModels = new Map<string, MageRig>();
+  private lastShadowUpdateAt = 0;
+  private fieldVisuals = new Map<string, { key: string; root: THREE.Group; height: number }>();
+  private figureDecorations = new Map<string, { key: string; root: THREE.Group }>();
 
   constructor() {
     super(magicArenaManifest.hostView);
@@ -329,8 +346,15 @@ export class MagicArenaHostScene extends Phaser.Scene {
     } satisfies Partial<CSSStyleDeclaration>);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.setClearColor(0x06111f, 1);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    renderer.setClearColor(arenaPalette.night, 1);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.shadowMap.autoUpdate = false;
+    renderer.shadowMap.needsUpdate = true;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.15;
+    renderer.domElement.setAttribute("aria-label", "Magic Arena – 3D Fantasy-Arena");
     renderer.domElement.style.width = "100%";
     renderer.domElement.style.height = "100%";
     renderer.domElement.style.display = "block";
@@ -356,10 +380,10 @@ export class MagicArenaHostScene extends Phaser.Scene {
       right: "16px",
       bottom: "14px",
       padding: "6px 12px",
-      borderRadius: "8px",
-      background: "rgba(2, 6, 23, 0.66)",
-      border: "1px solid rgba(125, 211, 252, 0.28)",
-      color: "#bae6fd",
+      borderRadius: "2px",
+      background: "rgba(12, 22, 19, 0.85)",
+      border: "1px solid rgba(186, 148, 83, 0.38)",
+      color: arenaPalette.parchment,
       fontFamily: "Inter, system-ui, sans-serif",
       fontSize: "13px",
       fontWeight: "800",
@@ -388,32 +412,26 @@ export class MagicArenaHostScene extends Phaser.Scene {
 
   private createScene(): void {
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color("#06111f");
-    scene.fog = new THREE.Fog("#06111f", 7, 18);
+    scene.background = new THREE.Color(arenaPalette.night);
+    scene.fog = new THREE.FogExp2(arenaPalette.night, 0.038);
 
     const camera = new THREE.PerspectiveCamera(48, 16 / 9, 0.1, 100);
     camera.position.set(0, 7.6, 7.8);
     camera.lookAt(0, 0, 0);
 
-    scene.add(new THREE.HemisphereLight("#dbeafe", "#123145", 1.25));
-    const key = new THREE.DirectionalLight("#ffffff", 2.2);
-    key.position.set(2, 8, 5);
+    scene.add(new THREE.HemisphereLight("#a5bcb5", "#302319", 1.3));
+    const key = new THREE.DirectionalLight("#ffdbab", 3.1);
+    key.position.set(-3, 9, 4);
+    key.castShadow = true;
+    key.shadow.mapSize.set(1024, 1024);
+    Object.assign(key.shadow.camera, { left: -7, right: 7, top: 7, bottom: -7 });
+    key.shadow.normalBias = 0.025;
     scene.add(key);
-
-    const water = new THREE.Mesh(
-      new THREE.CircleGeometry(7.2, 96),
-      new THREE.MeshStandardMaterial({
-        color: "#0369a1",
-        emissive: "#075985",
-        roughness: 0.35,
-        metalness: 0,
-        transparent: true,
-        opacity: 0.78
-      })
-    );
-    water.rotation.x = -Math.PI / 2;
-    water.position.y = -0.08;
-    scene.add(water);
+    const rim = new THREE.DirectionalLight("#9cbcc5", 1.6);
+    rim.position.set(5, 5, -6);
+    scene.add(rim);
+    this.ocean = createOcean();
+    scene.add(this.ocean);
 
     const boardGroup = new THREE.Group();
     scene.add(boardGroup);
@@ -456,13 +474,12 @@ export class MagicArenaHostScene extends Phaser.Scene {
     return { width, height };
   }
 
-  private getDefaultCameraPose(width: number): { position: THREE.Vector3; look: THREE.Vector3 } {
-    const compact = width > 0 && width < 900;
-
-    return {
-      position: new THREE.Vector3(0, compact ? 8.8 : 7.6, compact ? 8.6 : 7.8),
-      look: new THREE.Vector3(0, 0, 0)
-    };
+  private getDefaultCameraPose(_width: number): { position: THREE.Vector3; look: THREE.Vector3 } {
+    const aspect = this.camera?.aspect ?? 16 / 9;
+    const radius = this.latestState?.board.radius ?? 5;
+    const key = `${radius}:${aspect}`;
+    if (this.overviewPose?.key !== key) this.overviewPose = { key, ...fitIslandOverview(radius, aspect) };
+    return this.overviewPose;
   }
 
   private getMovingCameraPose(width: number): { position: THREE.Vector3; look: THREE.Vector3 } | null {
@@ -577,11 +594,11 @@ export class MagicArenaHostScene extends Phaser.Scene {
     const deltaMs = this.lastCameraFrameAt > 0 ? Math.min(100, now - this.lastCameraFrameAt) : 16;
     this.lastCameraFrameAt = now;
 
-    const pose = (this.cameraMode === "moving" ? this.getMovingCameraPose(width) : null)
+    const pose = (this.cameraMode === "moving" && !this.reducedMotion.matches ? this.getMovingCameraPose(width) : null)
       ?? this.getDefaultCameraPose(width);
 
     // Frame-rate independent damping for smooth, motion-sickness-friendly transitions.
-    const damping = 1 - Math.exp(-deltaMs / 450);
+    const damping = this.reducedMotion.matches ? 1 : 1 - Math.exp(-deltaMs / 450);
 
     camera.position.lerp(pose.position, damping);
     this.cameraLookTarget.lerp(pose.look, damping);
@@ -616,8 +633,16 @@ export class MagicArenaHostScene extends Phaser.Scene {
     this.updateCameraPose(width);
 
     if (this.boardGroup) {
-      this.boardGroup.rotation.y = Math.sin(Date.now() / 3600) * 0.025;
       this.updateActionEffects();
+      this.updateMagePoses();
+    }
+    if (this.ocean) animateOcean(this.ocean, performance.now() / 1000, this.reducedMotion.matches);
+    const active = this.latestState?.activeAction;
+    const now = performance.now();
+    if (active && now - this.activeActionEffectStartAt < this.getActionTimingProfile(active).defaultDurationMs + 100
+      && now - this.lastShadowUpdateAt >= 1000 / 30) {
+      renderer.shadowMap.needsUpdate = true;
+      this.lastShadowUpdateAt = now;
     }
 
     renderer.render(scene, camera);
@@ -638,6 +663,18 @@ export class MagicArenaHostScene extends Phaser.Scene {
       active.targetCoord ? axialKey(active.targetCoord) : "none",
       active.at
     ].join("|");
+  }
+
+  private updateMagePoses(): void {
+    const active = this.latestState?.activeAction;
+    const now = performance.now();
+    const timing = this.getActionTimingProfile(active);
+    const progress = Math.max(0, Math.min(1, (now - this.activeActionEffectStartAt) / timing.defaultDurationMs));
+    for (const entry of this.mageRigs) {
+      const acting = active?.figureId === entry.figureId && active.kind === "action";
+      animateMage(entry.rig, now / 1000, acting ? active.actionId : undefined,
+        acting ? progress : 0, acting && entry.walking && progress > 0 && progress < 1, this.reducedMotion.matches);
+    }
   }
 
   private getActionTimingProfile(active: MagicArenaActiveActionState | undefined): MagicArenaActionTimingProfile {
@@ -760,6 +797,9 @@ export class MagicArenaHostScene extends Phaser.Scene {
       const age = rawAgeMs / Math.max(1, durationMs);
       const progress = Math.min(1, age);
       const loopProgress = age % 1;
+      const persistent = ["pulse", "bob", "rune", "hopPath", "digHop"].includes(effect.mode);
+      object.visible = persistent || age < 1;
+      if (!object.visible) return;
 
       if (effect.mode === "pulse") {
         const scale = effect.baseScale + Math.sin(loopProgress * Math.PI) * 0.24;
@@ -773,12 +813,12 @@ export class MagicArenaHostScene extends Phaser.Scene {
         }
       } else if (effect.mode === "bob") {
         object.position.y = effect.baseY + Math.sin(loopProgress * Math.PI * 2) * 0.045;
-        object.rotation.y += 0.02;
+        object.rotation.y = effectRotation(rawAgeMs, 0.02);
         setObjectOpacity(object, 0.86);
       } else if (effect.mode === "burst") {
         const wave = Math.sin(progress * Math.PI);
         object.scale.setScalar(effect.baseScale + progress * 1.35);
-        object.rotation.y += effect.spin ?? 0.025;
+        object.rotation.y = effectRotation(rawAgeMs, effect.spin ?? 0.025);
         setObjectOpacity(object, Math.max(0, wave * 0.9));
       } else if (effect.mode === "digHop") {
         const hop = Math.sin(progress * Math.PI);
@@ -786,7 +826,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
         object.scale.set(effect.baseScale + hop * 0.08, effect.baseScale + hop * 0.14, effect.baseScale + hop * 0.08);
       } else if (effect.mode === "ascend") {
         object.position.y = effect.baseY + progress * 1.2 + Math.sin(progress * Math.PI) * 0.1;
-        object.rotation.y += effect.spin ?? 0.025;
+        object.rotation.y = effectRotation(rawAgeMs, effect.spin ?? 0.025);
         object.scale.setScalar(effect.baseScale + progress * 0.25);
         setObjectOpacity(object, Math.max(0, 0.96 - progress * 0.82));
       } else if (effect.mode === "strike") {
@@ -794,11 +834,17 @@ export class MagicArenaHostScene extends Phaser.Scene {
         object.scale.setScalar(effect.baseScale + Math.sin(progress * Math.PI) * 0.18);
         setObjectOpacity(object, Math.max(0.2, flicker * (1 - progress * 0.45)));
       } else if (effect.mode === "projectile") {
-        const travel = Math.min(1, progress * 1.3);
+        const travel = Math.min(1, progress / 0.62);
         object.position.copy(effect.start).lerp(effect.end, travel);
-        object.rotation.y += effect.spin ?? 0.04;
+        object.position.y += Math.sin(travel * Math.PI) * 0.25;
+        object.rotation.y = effectRotation(rawAgeMs, effect.spin ?? 0.04);
         object.scale.setScalar(0.72 + Math.sin(travel * Math.PI) * 0.42);
-        setObjectOpacity(object, Math.max(0.15, 1 - Math.max(0, progress - 0.72) * 2.4));
+        setObjectOpacity(object, progress < 0.62 ? 1 : 0);
+      } else if (effect.mode === "debris") {
+        object.position.copy(effect.start).addScaledVector(effect.velocity, progress);
+        object.position.y -= progress * progress * 1.15;
+        object.rotation.set(progress * 7, progress * 4, progress * 3);
+        setObjectOpacity(object, Math.max(0, 1 - progress));
       } else if (effect.mode === "quake") {
         object.position.y = effect.baseY + Math.sin(age * Math.PI * 18) * 0.035 * (1 - progress);
         object.scale.setScalar(effect.baseScale + progress * 1.1);
@@ -808,21 +854,25 @@ export class MagicArenaHostScene extends Phaser.Scene {
 
         if (points.length > 0) {
           const segmentCount = Math.max(1, points.length - 1);
-          const travel = Math.min(0.999, progress * 1.18);
+          const travel = Math.min(1, progress * 1.18);
           const segmentIndex = Math.min(segmentCount - 1, Math.floor(travel * segmentCount));
           const localT = travel * segmentCount - segmentIndex;
           const start = points[segmentIndex] ?? points[0];
           const end = points[segmentIndex + 1] ?? start;
 
           object.position.copy(start).lerp(end, localT);
-          object.position.y += Math.sin(localT * Math.PI) * 0.34;
+          object.position.y += this.reducedMotion.matches ? 0 : Math.sin(localT * Math.PI) * 0.065;
+          const direction = end.clone().sub(start);
+          if (direction.lengthSq() > 0.0001) {
+            object.rotation.y = Math.atan2(direction.x, direction.z);
+          }
         }
 
-        object.rotation.y += effect.spin ?? 0.06;
-        object.scale.setScalar(effect.baseScale + Math.sin(progress * Math.PI) * 0.18);
+        // Path heading was set above; no extra per-frame rotation is accumulated.
+        object.scale.setScalar(effect.baseScale);
       } else if (effect.mode === "rune") {
         object.position.y = effect.baseY + Math.sin(loopProgress * Math.PI * 2) * 0.035;
-        object.rotation.y += 0.035;
+        object.rotation.y = effectRotation(rawAgeMs, 0.035);
         object.scale.setScalar(effect.baseScale + Math.sin(loopProgress * Math.PI) * 0.18);
         setObjectOpacity(object, 0.62 + Math.sin(loopProgress * Math.PI) * 0.3);
       }
@@ -953,39 +1003,90 @@ export class MagicArenaHostScene extends Phaser.Scene {
       return;
     }
 
+    // Ready flags, connection changes and timers must not recreate hundreds of
+    // meshes or interrupt the current spell on every network broadcast.
+    const visualKey = JSON.stringify([state.board, state.players.map((player) => [player.playerId, player.color, player.figures]),
+      state.activeAction, state.pendingBombs, state.boardObjects, state.currentRoundEvent]);
+    if (visualKey === this.boardVisualKey) return;
+    this.boardVisualKey = visualKey;
+    if (this.threeRenderer) this.threeRenderer.shadowMap.needsUpdate = true;
+
+    // Articulated models retain their GPU buffers between actions. Only their
+    // parent placement, labels and pose change when a new action is published.
+    for (const rig of this.mageModels.values()) rig.root.removeFromParent();
+    for (const field of this.fieldVisuals.values()) field.root.removeFromParent();
+    for (const decoration of this.figureDecorations.values()) decoration.root.removeFromParent();
+
     for (const child of [...group.children]) {
       group.remove(child);
       disposeObject(child);
     }
+    this.mageRigs = [];
 
     const fieldHeights = new Map<string, number>();
+    for (const [coord, visual] of this.fieldVisuals) {
+      if (!state.board.fieldsByCoord[coord]) {
+        disposeObject(visual.root);
+        this.fieldVisuals.delete(coord);
+      }
+    }
 
     for (const field of Object.values(state.board.fieldsByCoord)) {
       const world = axialToWorld(field.coord);
+      const coordKey = axialKey(field.coord);
+      const key = JSON.stringify([field.exists, field.hp, field.maxHp, field.type, field.specialType]);
+      const cached = this.fieldVisuals.get(coordKey);
+      if (cached?.key === key) {
+        group.add(cached.root);
+        if (field.exists) fieldHeights.set(coordKey, cached.height);
+        continue;
+      }
+      if (cached) disposeObject(cached.root);
+      const fieldRoot = new THREE.Group();
+      group.add(fieldRoot);
 
       if (!field.exists) {
         const ring = new THREE.Mesh(
           new THREE.TorusGeometry(hexSize * 0.72, 0.025, 8, 6),
-          createMaterial("#38bdf8", 0.44)
+          createMaterial("#739b9b", 0.26)
         );
         ring.position.set(world.x, 0.02, world.z);
         ring.rotation.x = Math.PI / 2;
-        group.add(ring);
+        fieldRoot.add(ring);
+        this.fieldVisuals.set(coordKey, { key, root: fieldRoot, height: 0 });
         continue;
       }
 
       const fullHeight = 0.24 + (field.maxHp / maxFieldHp) * 0.36;
       const height = 0.12 + (field.hp / Math.max(1, field.maxHp)) * (fullHeight - 0.12);
       fieldHeights.set(axialKey(field.coord), height);
+      this.fieldVisuals.set(coordKey, { key, root: fieldRoot, height });
       const mesh = new THREE.Mesh(
-        new THREE.CylinderGeometry(hexSize, hexSize, height, 6),
+        new THREE.CylinderGeometry(hexSize * 0.97, hexSize, height, 6),
         createMaterial(fieldColor(field.type, field.hp, field.maxHp))
       );
       mesh.position.set(world.x, height / 2, world.z);
-      group.add(mesh);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      fieldRoot.add(mesh);
+      const inset = new THREE.Mesh(
+        new THREE.CylinderGeometry(hexSize * 0.84, hexSize * 0.88, 0.025, 6),
+        createMaterial(fieldColor(field.type, field.hp, field.maxHp))
+      );
+      inset.position.set(world.x, height + 0.009, world.z);
+      inset.receiveShadow = true;
+      fieldRoot.add(inset);
+      // Brass corner inlays distinguish the strongest stone from fragile ochre slabs.
+      if (field.type === "strong") {
+        const inlay = new THREE.Mesh(new THREE.TorusGeometry(hexSize * 0.72, 0.007, 4, 6), createMaterial(arenaPalette.brass));
+        inlay.rotation.x = Math.PI / 2;
+        inlay.rotation.z = Math.PI / 6;
+        inlay.position.set(world.x, height + 0.025, world.z);
+        fieldRoot.add(inlay);
+      }
 
       if (field.specialType && field.specialType !== "explosive") {
-        this.addSpecialFieldVisual(group, field.specialType, field.coord, height);
+        this.addSpecialFieldVisual(fieldRoot, field.specialType, field.coord, height);
       }
     }
 
@@ -1248,37 +1349,55 @@ export class MagicArenaHostScene extends Phaser.Scene {
         : this.createEffect({ mode: "hopPath", createdAt: this.getEffectCreatedAt(), points: motionPoints, baseScale: 1, spin: 0 } satisfies MagicArenaEffect);
     }
 
-    const opacity = figure.stealthUntilRound !== undefined ? 0.48 : 0.96;
-    const body = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.13, figure.status === "in_water" ? 0.08 : 0.28, 6, 12),
-      createMaterial(color, opacity)
-    );
-    body.position.y = figure.status === "in_water" ? 0.05 : 0.18;
-    root.add(body);
-
-    const halo = new THREE.Mesh(
-      new THREE.TorusGeometry(0.19, 0.018, 8, 32),
-      createMaterial(figure.status === "in_water" ? "#7dd3fc" : "#f8fafc", figure.status === "in_water" ? 0.74 : 0.32)
-    );
-    halo.rotation.x = Math.PI / 2;
-    halo.position.y = 0.02;
-    root.add(halo);
-
-    const hpBar = createHpBarSprite(figure.hp, figure.maxHp, color);
-    hpBar.position.y = figure.status === "in_water" ? 0.34 : 0.56;
-    root.add(hpBar);
-
-    const name = createTextSprite(this.getFigureDisplayName(figure), tokens().color.text, "rgba(15,23,42,0.68)");
-    name.position.y = figure.status === "in_water" ? 0.52 : 0.76;
-    name.scale.set(0.56, 0.21, 1);
-    root.add(name);
-
-    if (figure.status === "in_water") {
-      const deadline = createTextSprite(`bis R${figure.rescueDeadlineRound ?? "?"}`, "#bae6fd", "rgba(7,89,133,0.72)");
-      deadline.position.y = 0.72;
-      deadline.scale.set(0.46, 0.18, 1);
-      root.add(deadline);
+    const modelKey = `${figure.figureId}|${color}|${figure.stealthUntilRound !== undefined}`;
+    let rig = this.mageModels.get(modelKey);
+    if (!rig) {
+      rig = createMage(color, figure.figureId);
+      if (figure.stealthUntilRound !== undefined) setObjectOpacity(rig.root, 0.42);
+      this.mageModels.set(modelKey, rig);
     }
+    // Existing root positions are centred above the stone; the miniature has feet at zero.
+    rig.root.position.y = figure.status === "in_water" ? -0.3 : -0.2;
+    const active = this.latestState?.activeAction;
+    const facing = active?.figureId === figure.figureId && active.targetCoord
+      ? axialToWorld(active.targetCoord).sub(world)
+      : new THREE.Vector3(-world.x, 0, -world.z);
+    if (facing.lengthSq() > 0.001 && !motionPoints) root.rotation.y = Math.atan2(facing.x, facing.z);
+    root.add(rig.root);
+    this.mageRigs.push({ rig, figureId: figure.figureId, walking: Boolean(motionPoints && motionMode === "path") });
+
+    const decorationKey = JSON.stringify([figure.hp, figure.maxHp, figure.name, figure.status, figure.rescueDeadlineRound, color]);
+    let decoration = this.figureDecorations.get(figure.figureId);
+    if (decoration?.key !== decorationKey) {
+      if (decoration) disposeObject(decoration.root);
+      const decorationRoot = new THREE.Group();
+      const halo = new THREE.Mesh(
+        new THREE.TorusGeometry(0.19, 0.018, 8, 32),
+        createMaterial(figure.status === "in_water" ? "#7dd3fc" : color, 0.85)
+      );
+      halo.rotation.x = Math.PI / 2;
+      halo.position.y = 0.02;
+      decorationRoot.add(halo);
+
+      const hpBar = createHpBarSprite(figure.hp, figure.maxHp, color);
+      hpBar.position.y = figure.status === "in_water" ? 0.34 : 0.56;
+      decorationRoot.add(hpBar);
+
+      const name = createTextSprite(this.getFigureDisplayName(figure), arenaPalette.parchment, "rgba(12,22,19,0.85)");
+      name.position.y = figure.status === "in_water" ? 0.52 : 0.76;
+      name.scale.set(0.56, 0.21, 1);
+      decorationRoot.add(name);
+
+      if (figure.status === "in_water") {
+        const deadline = createTextSprite(`bis R${figure.rescueDeadlineRound ?? "?"}`, "#bae6fd", "rgba(7,89,133,0.72)");
+        deadline.position.y = 0.72;
+        deadline.scale.set(0.46, 0.18, 1);
+        decorationRoot.add(deadline);
+      }
+      decoration = { key: decorationKey, root: decorationRoot };
+      this.figureDecorations.set(figure.figureId, decoration);
+    }
+    root.add(decoration.root);
 
     if (field?.exists === false && !motionStart) {
       root.position.y = 0.08;
@@ -2062,9 +2181,15 @@ export class MagicArenaHostScene extends Phaser.Scene {
       new THREE.Mesh(new THREE.SphereGeometry(0.28, 18, 12), createGlowMaterial("#fb923c", 0.42))
     );
     group.add(fireball);
-    this.addWorldBeamVisual(group, start, target, "#fb923c", 0.045, 0.38);
+    const savedStart = this.currentEffectStartAt;
+    const savedDuration = this.currentEffectDurationMs;
+    this.currentEffectStartAt = this.getEffectCreatedAt(savedDuration * 0.62);
+    this.currentEffectDurationMs = savedDuration * 0.38;
     this.addBurstCore(group, target, "#f97316", "#facc15", 0.22, 0.9);
     this.addActionRingVisual(group, targetCoord, "#f97316", fieldHeights.get(axialKey(targetCoord)) ?? 0.12, 0);
+    this.addImpactFragments(group, target, "#d6a46c");
+    this.currentEffectStartAt = savedStart;
+    this.currentEffectDurationMs = savedDuration;
   }
 
   private addBombExplosionEffect(
@@ -2081,6 +2206,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
 
     const centerWorld = this.getEffectWorld(center, fieldHeights, 0.38);
     this.addBurstCore(group, centerWorld, "#facc15", "#fb923c", 0.28, 1.05);
+    this.addImpactFragments(group, centerWorld, "#a49071");
 
     affectedCoords.forEach((coord, index) => {
       this.addActionRingVisual(group, coord, index === 0 ? "#facc15" : "#fb923c", fieldHeights.get(axialKey(coord)) ?? 0.12, index * 0.04);
@@ -2118,12 +2244,29 @@ export class MagicArenaHostScene extends Phaser.Scene {
       new THREE.Mesh(new THREE.SphereGeometry(0.42, 20, 14), createGlowMaterial("#a855f7", 0.34))
     );
     group.add(meteor);
-    this.addWorldBeamVisual(group, start, target, "#fb7185", 0.06, 0.44);
+    const savedStart = this.currentEffectStartAt;
+    const savedDuration = this.currentEffectDurationMs;
+    this.currentEffectStartAt = this.getEffectCreatedAt(savedDuration * 0.62);
+    this.currentEffectDurationMs = savedDuration * 0.38;
     this.addBurstCore(group, target, "#f97316", "#a855f7", 0.34, 1.18);
+    this.addImpactFragments(group, target, "#ad8c69");
 
     affectedCoords.forEach((coord, index) => {
       this.addActionRingVisual(group, coord, index === 0 ? "#f97316" : "#c084fc", fieldHeights.get(axialKey(coord)) ?? 0.12, index * 0.06);
     });
+    this.currentEffectStartAt = savedStart;
+    this.currentEffectDurationMs = savedDuration;
+  }
+
+  private addImpactFragments(group: THREE.Group, center: THREE.Vector3, color: string): void {
+    for (let i = 0; i < 12; i++) {
+      const angle = i / 12 * Math.PI * 2;
+      const fragment = new THREE.Mesh(new THREE.DodecahedronGeometry(0.035 + (i % 3) * 0.018), createMaterial(color));
+      fragment.position.copy(center);
+      fragment.userData.magicArenaEffect = this.createEffect({ mode: "debris", createdAt: this.getEffectCreatedAt(),
+        start: center.clone(), velocity: new THREE.Vector3(Math.sin(angle) * 0.75, 0.6 + (i % 4) * 0.15, Math.cos(angle) * 0.75) });
+      group.add(fragment);
+    }
   }
 
   private addEarthquakeEffect(
@@ -2311,6 +2454,8 @@ export class MagicArenaHostScene extends Phaser.Scene {
       : state.activeAction?.label ?? eventLabel;
 
     if (!turnLabel && state.activeAction?.resultLabel) {
+      const timing = this.getActionTimingProfile(state.activeAction);
+      const impactDelay = timing.textLeadMs + timing.defaultDurationMs * 0.72;
       const main = document.createElement("span");
       main.textContent = label;
       main.style.display = "block";
@@ -2322,7 +2467,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
         color: "#bbf7d0",
         fontSize: "0.78em",
         opacity: "0",
-        animation: `magicArenaResultReveal 180ms ease ${state.activeAction.actionId === "dig" ? "1050ms" : "850ms"} forwards`
+        animation: `magicArenaResultReveal 180ms ease ${Math.round(impactDelay)}ms forwards`
       } satisfies Partial<CSSStyleDeclaration>);
       panel.append(main, result);
     } else {
@@ -2336,16 +2481,17 @@ export class MagicArenaHostScene extends Phaser.Scene {
       minWidth: visible ? (isRoundEvent ? "360px" : "280px") : "0",
       maxWidth: isRoundEvent ? "760px" : "560px",
       padding: visible ? (isRoundEvent ? "18px 28px" : "14px 22px") : "0",
-      borderRadius: "8px",
+      borderRadius: "2px",
       textAlign: "center",
-      color: tokens().color.text,
+      color: arenaPalette.parchment,
+      fontFamily: 'Georgia, "Iowan Old Style", serif',
       fontSize: isRoundEvent ? "28px" : "24px",
-      fontWeight: "950",
+      fontWeight: "600",
       letterSpacing: "0",
       whiteSpace: "pre-line",
-      background: visible ? (isRoundEvent ? "rgba(30, 27, 75, 0.82)" : "rgba(2, 6, 23, 0.74)") : "transparent",
-      border: visible ? (isRoundEvent ? "1px solid rgba(196, 181, 253, 0.48)" : "1px solid rgba(125, 211, 252, 0.28)") : "1px solid transparent",
-      boxShadow: visible ? (isRoundEvent ? "0 22px 54px rgba(88, 28, 135, 0.38)" : "0 18px 40px rgba(2, 6, 23, 0.34)") : "none",
+      background: visible ? "rgba(12, 22, 19, 0.9)" : "transparent",
+      border: visible ? "1px solid rgba(186, 148, 83, 0.5)" : "1px solid transparent",
+      boxShadow: visible ? "0 18px 40px rgba(0, 0, 0, 0.3)" : "none",
       backdropFilter: visible ? "blur(10px)" : "none"
     } satisfies Partial<CSSStyleDeclaration>);
     return panel;
@@ -2388,6 +2534,19 @@ export class MagicArenaHostScene extends Phaser.Scene {
       this.animationId = null;
     }
 
+    for (const rig of this.mageModels.values()) rig.root.removeFromParent();
+    for (const rig of this.mageModels.values()) disposeObject(rig.root);
+    this.mageModels.clear();
+    for (const field of this.fieldVisuals.values()) {
+      field.root.removeFromParent();
+      disposeObject(field.root);
+    }
+    this.fieldVisuals.clear();
+    for (const decoration of this.figureDecorations.values()) {
+      decoration.root.removeFromParent();
+      disposeObject(decoration.root);
+    }
+    this.figureDecorations.clear();
     if (this.boardGroup) {
       for (const child of [...this.boardGroup.children]) {
         this.boardGroup.remove(child);
@@ -2395,7 +2554,14 @@ export class MagicArenaHostScene extends Phaser.Scene {
       }
     }
 
+    if (this.scene3d) disposeObject(this.scene3d);
+    this.scene3d?.traverse((object) => {
+      if (object instanceof THREE.Light && "shadow" in object) {
+        (object as THREE.DirectionalLight).shadow?.dispose();
+      }
+    });
     this.scene3d?.clear();
+    this.mageRigs = [];
     this.threeRenderer?.dispose();
     this.root?.remove();
     this.root = undefined;
@@ -2404,6 +2570,9 @@ export class MagicArenaHostScene extends Phaser.Scene {
     this.scene3d = undefined;
     this.camera = undefined;
     this.boardGroup = undefined;
+    this.ocean = undefined;
+    this.overviewPose = undefined;
+    this.boardVisualKey = null;
     this.latestState = null;
     this.figureSnapshots.clear();
     this.activeActionKey = null;
@@ -2411,7 +2580,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
     this.currentEffectStartAt = 0;
     this.currentEffectDurationMs = actionEffectMs;
     this.cameraModeBadge = undefined;
-    this.cameraMode = "static";
+    this.cameraMode = "moving";
     this.cameraLookTarget.set(0, 0, 0);
     this.lastCameraFrameAt = 0;
   }

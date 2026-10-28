@@ -19,16 +19,16 @@ const INTRO_PHASES = new Set(["round_intro", "countdown"]);
 const RESULT_PHASES = new Set(["result", "scoreboard", "finished"]);
 const OVERLAY_DEPTH = 10_000;
 
-/** Warm paper palette, matching the platform shell. */
+/** The same stone, parchment and brass palette as the playing field. */
 const theme = {
-  background: "#f7f1e7",
-  surface: "#fffbf4",
-  surfaceMuted: "#f3ece0",
-  ink: "#24313a",
-  inkSoft: "#3d4b55",
-  muted: "#697178",
-  line: "#ded5c7",
-  accent: "#6f6aa0",
+  background: "#111a19",
+  surface: "#192521",
+  surfaceMuted: "#24322c",
+  ink: "#f2e4c5",
+  inkSoft: "#ded0b2",
+  muted: "#a6b09f",
+  line: "#665a3d",
+  accent: "#ba9453",
   titleFont: 'Georgia, "Iowan Old Style", "Times New Roman", serif',
   bodyFont: 'Inter, ui-sans-serif, -apple-system, "Segoe UI", sans-serif',
   monoFont: '"IBM Plex Mono", ui-monospace, Menlo, monospace'
