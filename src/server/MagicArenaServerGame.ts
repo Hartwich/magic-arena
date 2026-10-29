@@ -1,4 +1,5 @@
-import type { ServerGame } from "@open-party-lab/game-core";
+import { arenaText } from "../text.js";
+import type { ServerGame, ServerGameContext } from "@open-party-lab/game-core";
 import type {
   MagicArenaControllerState,
   MagicArenaInput,
@@ -21,6 +22,11 @@ import {
   type MagicArenaRuntimeState
 } from "./magicArenaRules.js";
 
+function localizeRuntime(state: MagicArenaRuntimeState, context: ServerGameContext): MagicArenaRuntimeState {
+  const message = state.message ? arenaText(state.message, context.language) : state.message;
+  return message === state.message ? state : { ...state, message };
+}
+
 interface MagicArenaConfigureLobbyHostAction {
   type: "configure-lobby";
   planningMode?: unknown;
@@ -33,7 +39,7 @@ export const magicArenaServerGame: ServerGame<
 > = {
   manifest: magicArenaManifest,
   createInitialState(context) {
-    return createMagicArenaInitialState(context);
+    return localizeRuntime(createMagicArenaInitialState(context), context);
   },
   handleHostAction(state, action, _context) {
     const hostAction = action as Partial<MagicArenaConfigureLobbyHostAction> | null;
@@ -60,19 +66,19 @@ export const magicArenaServerGame: ServerGame<
     return {};
   },
   startRound(_state, context) {
-    return startMagicArenaRound(context);
+    return localizeRuntime(startMagicArenaRound(context), context);
   },
   handleInput(state, input, context) {
-    return handleMagicArenaInput(state, input, context);
+    return localizeRuntime(handleMagicArenaInput(state, input, context), context);
   },
   tick(state, deltaMs, context) {
-    return tickMagicArena(state, deltaMs, context);
+    return localizeRuntime(tickMagicArena(state, deltaMs, context), context);
   },
   isRoundFinished(state) {
     return isMagicArenaFinished(state);
   },
-  buildScore(state) {
-    return buildMagicArenaScore(state);
+  buildScore(state, context) {
+    return buildMagicArenaScore(state).map(entry => ({ ...entry, reason: arenaText(entry.reason ?? "", context.language) }));
   },
   toPublicState(state, context) {
     return toMagicArenaPublicState(state, context);

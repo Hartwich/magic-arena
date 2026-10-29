@@ -17,6 +17,7 @@ interface HostClientLike {
 }
 
 interface HostAppStateLike {
+  room?: { language?: "de" | "en" } | null;
   game?: {
     state?: unknown;
   } | null;
@@ -252,6 +253,7 @@ function createHpBarSprite(current: number, max: number, color: string): THREE.S
 }
 
 export class MagicArenaHostScene extends Phaser.Scene {
+  private english = false;
   private unsubscribe?: () => void;
   private root?: HTMLDivElement;
   private overlay?: HTMLDivElement;
@@ -314,6 +316,8 @@ export class MagicArenaHostScene extends Phaser.Scene {
     };
     window.addEventListener("keydown", this.debugKeyHandler);
     this.unsubscribe = client.subscribe((appState) => {
+      this.english = appState.room?.language === "en";
+      this.updateCameraModeBadge();
       // Intro and result screens belong to this game, not the platform.
       if (renderRoundScreens(this, appState)) {
         return;
@@ -354,7 +358,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
     renderer.shadowMap.needsUpdate = true;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.15;
-    renderer.domElement.setAttribute("aria-label", "Magic Arena – 3D Fantasy-Arena");
+    renderer.domElement.setAttribute("aria-label", this.english ? "Magic Arena – 3D fantasy arena" : "Magic Arena – 3D-Fantasy-Arena");
     renderer.domElement.style.width = "100%";
     renderer.domElement.style.height = "100%";
     renderer.domElement.style.display = "block";
@@ -611,8 +615,8 @@ export class MagicArenaHostScene extends Phaser.Scene {
     }
 
     this.cameraModeBadge.textContent = this.cameraMode === "moving"
-      ? "Kamera: Verfolgung [S]"
-      : "Kamera: Statisch [S]";
+      ? this.english ? "Camera: Follow [S]" : "Kamera: Verfolgung [S]"
+      : this.english ? "Camera: Static [S]" : "Kamera: Statisch [S]";
   }
 
   private renderThree(): void {
@@ -1389,7 +1393,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
       decorationRoot.add(name);
 
       if (figure.status === "in_water") {
-        const deadline = createTextSprite(`bis R${figure.rescueDeadlineRound ?? "?"}`, "#bae6fd", "rgba(7,89,133,0.72)");
+        const deadline = createTextSprite(`${this.english ? "until R" : "bis R"}${figure.rescueDeadlineRound ?? "?"}`, "#bae6fd", "rgba(7,89,133,0.72)");
         deadline.position.y = 0.72;
         deadline.scale.set(0.46, 0.18, 1);
         decorationRoot.add(deadline);
@@ -2407,9 +2411,9 @@ export class MagicArenaHostScene extends Phaser.Scene {
     const activePlayerName = state.activePlayerId
       ? state.players.find((player) => player.playerId === state.activePlayerId)?.name ?? state.activePlayerId
       : null;
-    phase.textContent = `Runde ${state.roundIndex} | ${state.magicPhase}${state.currentSlot !== null ? ` | Slot ${state.currentSlot + 1}` : ""}${
+    phase.textContent = `${this.english ? "Round" : "Runde"} ${state.roundIndex} | ${state.magicPhase === "planning" ? (this.english ? "Planning" : "Planung") : state.magicPhase === "execution" ? (this.english ? "Execution" : "Ausführung") : (this.english ? "Game over" : "Spielende")}${state.currentSlot !== null ? ` | Slot ${state.currentSlot + 1}` : ""}${
       state.planningMode === "sequential" && state.magicPhase === "planning" && activePlayerName
-        ? ` | ${activePlayerName} am Zug`
+        ? ` | ${activePlayerName}${this.english ? "’s turn" : " am Zug"}`
         : ""
     }`;
     phase.style.color = "#bae6fd";
@@ -2429,7 +2433,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
         borderRadius: "8px",
         background: player.ready ? "rgba(34,197,94,0.16)" : "rgba(15,23,42,0.5)"
       } satisfies Partial<CSSStyleDeclaration>);
-      row.innerHTML = `<span style="color:${player.color};font-weight:900;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${player.name}</span><span>${alive} aktiv / ${water} Wasser / ${player.handCount} Karten</span>`;
+      row.innerHTML = `<span style="color:${player.color};font-weight:900;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${player.name}</span><span>${alive} ${this.english ? "active" : "aktiv"} / ${water} ${this.english ? "in water" : "Wasser"} / ${player.handCount} ${this.english ? "cards" : "Karten"}</span>`;
       panel.appendChild(row);
     }
 
@@ -2439,12 +2443,12 @@ export class MagicArenaHostScene extends Phaser.Scene {
   private createActiveActionPanel(state: MagicArenaPublicState): HTMLDivElement {
     const panel = document.createElement("div");
     const eventLabel = state.currentRoundEvent
-      ? `Rundenereignis: ${state.currentRoundEvent.name}\n${state.currentRoundEvent.description}`
+      ? `${this.english ? "Round event" : "Rundenereignis"}: ${state.currentRoundEvent.name}\n${state.currentRoundEvent.description}`
       : "";
     const isRoundEvent = state.activeAction?.kind === "round_event" || Boolean(state.currentRoundEvent);
     const turnLabel =
       state.planningMode === "sequential" && state.magicPhase === "planning" && state.activePlayerId
-        ? `${state.players.find((player) => player.playerId === state.activePlayerId)?.name ?? state.activePlayerId} ist am Zug (Zug ${state.planningSlotIndex + 1}/${state.totalPlanningSlots})`
+        ? `${state.players.find((player) => player.playerId === state.activePlayerId)?.name ?? state.activePlayerId}${this.english ? "’s turn (turn" : " ist am Zug (Zug"} ${state.planningSlotIndex + 1}/${state.totalPlanningSlots})`
         : "";
     const visible = Boolean(state.activeAction?.label || eventLabel || turnLabel);
     const label = turnLabel
@@ -2500,7 +2504,7 @@ export class MagicArenaHostScene extends Phaser.Scene {
   private createLogPanel(state: MagicArenaPublicState): HTMLDivElement {
     const panel = createPanel();
     const title = document.createElement("strong");
-    title.textContent = "Event-Log";
+    title.textContent = this.english ? "Event log" : "Ereignisse";
     title.style.fontSize = "18px";
     panel.appendChild(title);
 

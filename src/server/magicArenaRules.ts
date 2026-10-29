@@ -1,3 +1,4 @@
+import { arenaText } from "../text.js";
 import {
   createBaseRoundState,
   roundPhaseDurations,
@@ -3281,17 +3282,19 @@ export function toMagicArenaPublicState(
       coord: { ...effect.coord }
     })),
     plannedActionsByPlayer: redactPlans(state, viewerPlayerId),
-    actionLog: state.actionLog,
-    activeAction: state.activeAction,
+    actionLog: state.actionLog.map(entry => ({ ...entry, message: arenaText(entry.message, context.language) })),
+    activeAction: state.activeAction ? { ...state.activeAction, label: arenaText(state.activeAction.label, context.language), resultLabel: state.activeAction.resultLabel ? arenaText(state.activeAction.resultLabel, context.language) : undefined } : undefined,
     currentRoundEvent: state.currentRoundEvent
       ? {
           ...state.currentRoundEvent,
+          name: arenaText(state.currentRoundEvent.name, context.language),
+          description: arenaText(state.currentRoundEvent.description, context.language),
           markedCoords: state.currentRoundEvent.markedCoords.map((coord) => ({ ...coord }))
         }
       : undefined,
     winnerPlayerId: state.winnerPlayerId,
     rngSeed: state.rngSeed,
-    cardDefinitions: [...magicArenaCardDefinitions]
+    cardDefinitions: magicArenaCardDefinitions.map(card => ({ ...card, name: arenaText(card.name, context.language), type: arenaText(card.type, context.language), description: arenaText(card.description, context.language) }))
   };
 }
 

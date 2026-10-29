@@ -1,3 +1,4 @@
+import { arenaText } from "../text.js";
 import type { MagicArenaControllerState } from "../protocol.js";
 import type { MagicArenaLayoutModel } from "./platform-layout-models.js";
 import type { ControllerGameRenderContext } from "./platform-registry.js";
@@ -47,7 +48,7 @@ export function buildMagicArenaControllerModel(context: ControllerGameRenderCont
             ? en ? "Game over" : "Spielende"
             : undefined,
     helperText:
-      state.game?.message ??
+      (state.game?.message ? arenaText(state.game.message, state.room?.language) : undefined) ??
       (en
         ? "Choose a figure, an action or card, and then target coordinates."
         : "Waehle Figur, Aktion oder Karte und danach Zielkoordinaten."),

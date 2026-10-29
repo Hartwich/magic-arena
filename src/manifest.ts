@@ -1,3 +1,4 @@
+import { catalogText } from "./catalogText.js";
 import type { GameManifest } from "@open-party-lab/game-core";
 import {
   MAGIC_ARENA_DEFAULT_PLANNING_MODE,
@@ -6,6 +7,7 @@ import {
 
 export const magicArenaManifest = {
   id: "magic-arena",
+  translations: catalogText,
   displayName: "Magic Arena",
   description: "Rundenbasierte 3D-Hex-Taktik mit Karten, Wasserloechern und verdeckter Planung.",
   minPlayers: 2,
